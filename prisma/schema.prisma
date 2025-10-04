@@ -1,0 +1,101 @@
+generator client {
+  provider = "prisma-client-js"
+  //output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+// -------------------- Заявитель --------------------
+model Applicant {
+  id       Int       @id @default(autoincrement())
+  name     String
+  role      String
+  photo    String?
+  password String
+  email    String    @unique
+  requests Request[] // Один заявитель может иметь несколько заявок
+}
+
+// -------------------- Заявка --------------------
+model Request {
+  id          Int       @id @default(autoincrement())
+  problem     String
+  submittedAt DateTime  @default(now())
+  closedAt    DateTime?
+  
+  // Связь с транспортом
+  transport   Transport @relation(fields: [transportId], references: [id])
+  transportId Int
+
+  // Связь с заявителем
+  applicant   Applicant @relation(fields: [applicantId], references: [id])
+  applicantId Int
+
+  // Связь с механиком (опционально, пока заявка не назначена)
+  mechanic    Mechanic? @relation(fields: [mechanicId], references: [id])
+  mechanicId  Int?
+
+  // Связь с сервисом (через менеджера/механика)
+  service     Service?  @relation(fields: [serviceId], references: [id])
+  serviceId   Int?
+}
+
+// -------------------- Менеджер сервиса --------------------
+model Manager {
+  id        Int      @id @default(autoincrement())
+  name      String
+  role      String
+  photo     String?
+  password  String
+  email     String   @unique
+
+  // Связь с сервисом (один менеджер = один сервис)
+  service   Service  @relation(fields: [serviceId], references: [id])
+  serviceId Int @unique
+}
+
+// -------------------- Механик --------------------
+model Mechanic {
+  id        Int       @id @default(autoincrement())
+  name      String
+  role      String
+  photo     String?
+  password  String
+  email     String   @unique
+
+  // Связь с сервисом (один механик = один сервис)
+  service   Service  @relation(fields: [serviceId], references: [id])
+  serviceId Int
+
+  // Заявки, над которыми работает механик
+  requests  Request[]
+}
+
+// -------------------- Сервис --------------------
+model Service {
+  id        Int        @id @default(autoincrement())
+  address   String
+  workTime  String
+
+  // Связь с менеджером (один сервис = один менеджер)
+  manager   Manager?
+
+  // Механики сервиса
+  mechanics Mechanic[]
+
+  // Все заявки, принятые сервисом
+  requests  Request[]
+}
+
+// -------------------- Транспорт --------------------
+model Transport {
+  id       Int       @id @default(autoincrement())
+  type     String
+  serial   String    @unique
+  photo    String?
+  model    String
+  requests Request[]
+}
