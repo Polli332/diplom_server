@@ -1,6 +1,5 @@
 generator client {
   provider = "prisma-client-js"
-  //output   = "../generated/prisma"
 }
 
 datasource db {
@@ -23,6 +22,7 @@ model Applicant {
 model Request {
   id          Int       @id @default(autoincrement())
   problem     String
+  status      String    @default("новая")
   submittedAt DateTime  @default(now())
   closedAt    DateTime?
   

@@ -1,0 +1,1272 @@
+import 'dart:convert';
+import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'dart:io';
+import 'package:http/http.dart' as http;
+import 'package:flutter/foundation.dart' show kIsWeb;
+import 'dart:html' as html; // Для веб-платформы
+
+class ApplicantMenu extends StatefulWidget {
+  const ApplicantMenu({super.key});
+
+  @override
+  State<ApplicantMenu> createState() => _ApplicantMenuState();
+}
+
+class _ApplicantMenuState extends State<ApplicantMenu> {
+  String? userName;
+  String? userEmail;
+  int? userId;
+  String? userPhoto;
+  List<Request> requests = [];
+  List<Transport> transports = [];
+  List<Service> services = [];
+  bool _isAccountPanelOpen = false;
+  String _sortOrder = 'newest';
+  String? _statusFilter;
+  String? _transportFilter;
+  bool _isLoading = true;
+
+  final TextEditingController _nameController = TextEditingController();
+  final TextEditingController _emailController = TextEditingController();
+  final TextEditingController _passwordController = TextEditingController();
+  final TextEditingController _problemController = TextEditingController();
+  final TextEditingController _transportNameController = TextEditingController();
+  String _selectedTransportType = 'троллейбусы';
+  final TextEditingController _serialController = TextEditingController();
+  final TextEditingController _modelController = TextEditingController();
+  int? _selectedServiceId;
+  
+  String? _selectedPhotoBase64;
+  String? _selectedProfilePhotoBase64;
+  final ImagePicker _imagePicker = ImagePicker();
+
+  final List<String> _transportTypes = [
+    'троллейбусы',
+    'электробусы',
+    'трамваи',
+    'электрогрузовики'
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    _loadUserData();
+  }
+
+  Future<void> _loadUserData() async {
+    final prefs = await SharedPreferences.getInstance();
+    setState(() {
+      userId = prefs.getInt('user_id');
+      userName = prefs.getString('user_name') ?? 'Пользователь';
+      userEmail = prefs.getString('user_email') ?? 'Email не указан';
+      userPhoto = prefs.getString('user_photo');
+      
+      _nameController.text = userName!;
+      _emailController.text = userEmail!;
+    });
+    
+    print('User loaded: ID=$userId, Name=$userName');
+    
+    await Future.wait([
+      _loadUserRequests(),
+      _loadTransports(),
+      _loadServices(),
+    ]);
+  }
+
+  Future<void> _loadUserRequests() async {
+    try {
+      print('Loading user requests for user ID: $userId');
+      final response = await http.get(Uri.parse('http://localhost:3000/requests'));
+      
+      print('Requests response status: ${response.statusCode}');
+      
+      if (response.statusCode == 200) {
+        final List<dynamic> data = json.decode(response.body);
+        print('Total requests loaded from server: ${data.length}');
+        
+        setState(() {
+          requests = data.map((item) => Request.fromJson(item)).toList();
+          // Фильтруем заявки только текущего пользователя
+          requests = requests.where((request) => request.applicantId == userId).toList();
+          
+          print('Filtered requests for user $userId: ${requests.length}');
+          _isLoading = false;
+        });
+      } else {
+        print('Error loading requests: ${response.statusCode}');
+        setState(() => _isLoading = false);
+      }
+    } catch (e) {
+      print('Ошибка загрузки заявок: $e');
+      setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _loadTransports() async {
+    try {
+      final response = await http.get(Uri.parse('http://localhost:3000/transports'));
+      if (response.statusCode == 200) {
+        final List<dynamic> data = json.decode(response.body);
+        setState(() {
+          transports = data.map((item) => Transport.fromJson(item)).toList();
+        });
+        print('Loaded ${transports.length} transports');
+      }
+    } catch (e) {
+      print('Ошибка загрузки транспорта: $e');
+    }
+  }
+
+  Future<void> _loadServices() async {
+    try {
+      print('Loading services...');
+      final response = await http.get(Uri.parse('http://localhost:3000/services'));
+      
+      print('Services response status: ${response.statusCode}');
+      
+      if (response.statusCode == 200) {
+        final List<dynamic> data = json.decode(response.body);
+        print('Successfully loaded ${data.length} services');
+        
+        setState(() {
+          services = data.map((item) => Service.fromJson(item)).toList();
+        });
+      } else {
+        print('Failed to load services: ${response.statusCode}');
+      }
+    } catch (e) {
+      print('Ошибка загрузки сервисов: $e');
+    }
+  }
+
+  // Обновленный метод для выбора фото транспорта с поддержкой веб-платформы
+  Future<void> _pickImage() async {
+    try {
+      print('Начало выбора фото транспорта...');
+      
+      if (kIsWeb) {
+        await _pickImageWeb('transport');
+      } else {
+        final XFile? image = await _imagePicker.pickImage(
+          source: ImageSource.gallery,
+          maxWidth: 800,
+          maxHeight: 800,
+          imageQuality: 80,
+        );
+        if (image != null) {
+          await _processImageFile(File(image.path), 'transport');
+        }
+      }
+    } catch (e) {
+      print('Ошибка выбора фото транспорта: $e');
+      _showError('Ошибка выбора фото: $e');
+    }
+  }
+
+  // Метод для выбора фото на веб-платформе
+  Future<void> _pickImageWeb(String type) async {
+    final html.FileUploadInputElement input = html.FileUploadInputElement();
+    input.accept = 'image/*';
+    input.click();
+
+    await input.onChange.first;
+
+    if (input.files!.isNotEmpty) {
+      final html.File file = input.files!.first;
+      final reader = html.FileReader();
+
+      reader.readAsArrayBuffer(file);
+
+      await reader.onLoadEnd.first;
+
+      if (reader.result != null) {
+        final List<int> bytes = List<int>.from(reader.result as List<int>);
+        final base64Image = base64Encode(bytes);
+        
+        print('Фото выбрано на веб-платформе, размер: ${bytes.length} байт');
+        
+        if (type == 'transport') {
+          setState(() {
+            _selectedPhotoBase64 = base64Image;
+          });
+          _showSuccess('Фото транспорта выбрано');
+        } else if (type == 'profile') {
+          setState(() {
+            _selectedProfilePhotoBase64 = base64Image;
+          });
+          _showSuccess('Фото профиля выбрано');
+        }
+      }
+    }
+  }
+
+  // Метод для обработки файла изображения (для мобильных платформ)
+  Future<void> _processImageFile(File imageFile, String type) async {
+    try {
+      print('Обработка файла: ${imageFile.path}');
+      final bytes = await imageFile.readAsBytes();
+      print('Размер фото: ${bytes.length} байт');
+      final base64Image = base64Encode(bytes);
+      print('Base64 длина: ${base64Image.length} символов');
+      
+      if (type == 'transport') {
+        setState(() {
+          _selectedPhotoBase64 = base64Image;
+        });
+        _showSuccess('Фото транспорта выбрано');
+      } else if (type == 'profile') {
+        setState(() {
+          _selectedProfilePhotoBase64 = base64Image;
+        });
+        _showSuccess('Фото профиля выбрано');
+      }
+    } catch (e) {
+      print('Ошибка обработки файла: $e');
+      _showError('Ошибка обработки файла: $e');
+    }
+  }
+
+  // Обновленный метод для выбора фото профиля с поддержкой веб-платформы
+  Future<void> _pickProfileImage() async {
+    try {
+      print('Начало выбора фото профиля...');
+      
+      if (kIsWeb) {
+        await _pickImageWeb('profile');
+      } else {
+        final XFile? image = await _imagePicker.pickImage(
+          source: ImageSource.gallery,
+          maxWidth: 800,
+          maxHeight: 800,
+          imageQuality: 80,
+        );
+
+        if (image != null && mounted) {
+          await _processImageFile(File(image.path), 'profile');
+        }
+      }
+    } catch (e) {
+      print('Ошибка выбора фото профиля: $e');
+      _showError('Ошибка выбора фото: $e');
+    }
+  }
+
+  void _createRequest() {
+    _selectedServiceId = null;
+
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              title: const Text('Создать заявку'),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    TextField(
+                      controller: _problemController,
+                      decoration: const InputDecoration(
+                        labelText: 'Описание проблемы *',
+                        border: OutlineInputBorder(),
+                      ),
+                      maxLines: 3,
+                    ),
+                    const SizedBox(height: 16),
+                    
+                    const Align(
+                      alignment: Alignment.centerLeft,
+                      child: Text(
+                        'Выберите сервис:',
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 16,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    DropdownButtonFormField<int>(
+                      value: _selectedServiceId,
+                      items: [
+                        const DropdownMenuItem(
+                          value: null,
+                          child: Text('Выберите сервис *'),
+                        ),
+                        ...services.map((Service service) {
+                          return DropdownMenuItem(
+                            value: service.id,
+                            child: Text('${service.address} (${service.workTime})'),
+                          );
+                        }).toList(),
+                      ],
+                      onChanged: (int? newValue) {
+                        setDialogState(() {
+                          _selectedServiceId = newValue;
+                        });
+                      },
+                      decoration: const InputDecoration(
+                        labelText: 'Сервисный центр *',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    
+                    const Text(
+                      'Данные транспорта:',
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 16,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    TextField(
+                      controller: _transportNameController,
+                      decoration: const InputDecoration(
+                        labelText: 'Название транспорта *',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    DropdownButtonFormField<String>(
+                      value: _selectedTransportType,
+                      items: _transportTypes.map((String type) {
+                        return DropdownMenuItem(
+                          value: type,
+                          child: Text(type),
+                        );
+                      }).toList(),
+                      onChanged: (String? newValue) {
+                        setDialogState(() {
+                          _selectedTransportType = newValue!;
+                        });
+                      },
+                      decoration: const InputDecoration(
+                        labelText: 'Тип транспорта *',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: _serialController,
+                      decoration: const InputDecoration(
+                        labelText: 'Серийный номер *',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: _modelController,
+                      decoration: const InputDecoration(
+                        labelText: 'Модель *',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    Row(
+                      children: [
+                        ElevatedButton(
+                          onPressed: _pickImage,
+                          child: const Text('Выбрать фото транспорта'),
+                        ),
+                        const SizedBox(width: 8),
+                        if (_selectedPhotoBase64 != null)
+                          const Text(
+                            'Фото выбрано',
+                            style: TextStyle(color: Colors.green),
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    const Text(
+                      '* - обязательные поля',
+                      style: TextStyle(color: Colors.grey, fontSize: 12),
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () {
+                    _clearRequestForm();
+                    Navigator.of(context).pop();
+                  },
+                  child: const Text('Отмена'),
+                ),
+                ElevatedButton(
+                  onPressed: () {
+                    if (_validateRequestForm()) {
+                      _addNewRequest();
+                      Navigator.of(context).pop();
+                    }
+                  },
+                  child: const Text('Создать'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  bool _validateRequestForm() {
+    if (_problemController.text.trim().isEmpty) {
+      _showError('Введите описание проблемы');
+      return false;
+    }
+    if (_selectedServiceId == null) {
+      _showError('Выберите сервисный центр');
+      return false;
+    }
+    if (_transportNameController.text.trim().isEmpty) {
+      _showError('Введите название транспорта');
+      return false;
+    }
+    if (_serialController.text.trim().isEmpty) {
+      _showError('Введите серийный номер');
+      return false;
+    }
+    if (_modelController.text.trim().isEmpty) {
+      _showError('Введите модель транспорта');
+      return false;
+    }
+    return true;
+  }
+
+  void _showError(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: Colors.red,
+      ),
+    );
+  }
+
+  Future<void> _addNewRequest() async {
+    try {
+      print('Starting to create new request...');
+      print('Selected service ID: $_selectedServiceId');
+
+      // Создаем транспорт
+      final transportResponse = await http.post(
+        Uri.parse('http://localhost:3000/transports'),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode({
+          'type': _selectedTransportType,
+          'serial': _serialController.text.trim(),
+          'model': _modelController.text.trim(),
+          'photo': _selectedPhotoBase64,
+        }),
+      );
+
+      if (transportResponse.statusCode == 200) {
+        final transportData = json.decode(transportResponse.body);
+        final transportId = transportData['id'];
+        print('Transport created with ID: $transportId');
+
+        // Создаем заявку с выбранным сервисом
+        final requestResponse = await http.post(
+          Uri.parse('http://localhost:3000/requests'),
+          headers: {'Content-Type': 'application/json'},
+          body: json.encode({
+            'problem': _problemController.text.trim(),
+            'transportId': transportId,
+            'applicantId': userId,
+            'mechanicId': null,
+            'serviceId': _selectedServiceId,
+            'closedAt': null,
+            'status': "новая"
+          }),
+        );
+
+        if (requestResponse.statusCode == 200) {
+          final requestData = json.decode(requestResponse.body);
+          final newRequest = Request.fromJson(requestData);
+          
+          setState(() {
+            requests.insert(0, newRequest);
+          });
+          
+          _clearRequestForm();
+          _showSuccess('Заявка успешно создана!');
+          
+          // Обновляем список заявок
+          await _loadUserRequests();
+        } else {
+          throw Exception('Failed to create request: ${requestResponse.statusCode}');
+        }
+      } else {
+        throw Exception('Failed to create transport: ${transportResponse.statusCode}');
+      }
+    } catch (e) {
+      print('Ошибка создания заявки: $e');
+      _showError('Ошибка при создании заявки: $e');
+    }
+  }
+
+  void _showSuccess(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: Colors.green,
+      ),
+    );
+  }
+
+  void _clearRequestForm() {
+    _problemController.clear();
+    _transportNameController.clear();
+    _serialController.clear();
+    _modelController.clear();
+    _selectedPhotoBase64 = null;
+    _selectedTransportType = 'троллейбусы';
+    _selectedServiceId = null;
+  }
+
+  Future<void> _updateProfile() async {
+    if (_nameController.text.trim().isEmpty || _emailController.text.trim().isEmpty) {
+      _showError('Заполните имя и email');
+      return;
+    }
+
+    try {
+      final Map<String, dynamic> updateData = {
+        'name': _nameController.text.trim(),
+        'email': _emailController.text.trim(),
+      };
+
+      if (_selectedProfilePhotoBase64 != null) {
+        updateData['photo'] = _selectedProfilePhotoBase64;
+      }
+
+      if (_passwordController.text.trim().isNotEmpty) {
+        updateData['password'] = _passwordController.text.trim();
+      }
+
+      final response = await http.put(
+        Uri.parse('http://localhost:3000/applicants/$userId'),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode(updateData),
+      );
+
+      if (response.statusCode == 200) {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString('user_name', _nameController.text.trim());
+        await prefs.setString('user_email', _emailController.text.trim());
+        if (_selectedProfilePhotoBase64 != null) {
+          await prefs.setString('user_photo', _selectedProfilePhotoBase64!);
+        }
+        
+        setState(() {
+          userName = _nameController.text.trim();
+          userEmail = _emailController.text.trim();
+          if (_selectedProfilePhotoBase64 != null) {
+            userPhoto = _selectedProfilePhotoBase64;
+          }
+          _passwordController.clear();
+          _selectedProfilePhotoBase64 = null;
+        });
+
+        _showSuccess('Профиль успешно обновлен');
+      } else {
+        throw Exception('Ошибка сервера: ${response.statusCode}');
+      }
+    } catch (e) {
+      print('Ошибка обновления профиля: $e');
+      _showError('Ошибка обновления профиля: $e');
+    }
+  }
+
+  Future<void> _logout() async {
+    setState(() => _isAccountPanelOpen = false);
+    await Future.delayed(const Duration(milliseconds: 300));
+    
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.clear();
+    
+    if (mounted) {
+      Navigator.pushNamedAndRemoveUntil(
+        context, 
+        '/login', 
+        (route) => false
+      );
+    }
+  }
+
+  void _showRequestDetails(Request request) {
+    final transport = transports.firstWhere(
+      (t) => t.id == request.transportId,
+      orElse: () => Transport(id: 0, type: 'Неизвестно', serial: 'Неизвестно', model: 'Неизвестно'),
+    );
+
+    final service = request.serviceId != null 
+        ? services.firstWhere(
+            (s) => s.id == request.serviceId,
+            orElse: () => Service(id: 0, address: 'Не указан', workTime: ''),
+          )
+        : Service(id: 0, address: 'Не назначен', workTime: '');
+
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: Text('Заявка #${request.id}'),
+          content: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                _buildDetailRow('Проблема:', request.problem),
+                _buildDetailRow('Статус:', _getRequestStatus(request)),
+                _buildDetailRow('Сервис:', service.address),
+                _buildDetailRow('Дата создания:', 
+                  '${request.submittedAt.day}.${request.submittedAt.month}.${request.submittedAt.year} ${request.submittedAt.hour}:${request.submittedAt.minute.toString().padLeft(2, '0')}'),
+                if (request.closedAt != null)
+                  _buildDetailRow('Дата закрытия:', 
+                    '${request.closedAt!.day}.${request.closedAt!.month}.${request.closedAt!.year}'),
+                const SizedBox(height: 16),
+                const Text(
+                  'Данные транспорта:',
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+                _buildDetailRow('Тип:', transport.type),
+                _buildDetailRow('Серийный номер:', transport.serial),
+                _buildDetailRow('Модель:', transport.model),
+                if (transport.photo != null && transport.photo!.isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  const Text(
+                    'Фото транспорта:',
+                    style: TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 8),
+                  Container(
+                    height: 150,
+                    width: double.infinity,
+                    decoration: BoxDecoration(
+                      border: Border.all(color: Colors.grey),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Image.memory(
+                      base64Decode(transport.photo!),
+                      fit: BoxFit.cover,
+                      errorBuilder: (context, error, stackTrace) {
+                        return const Center(
+                          child: Icon(Icons.error, color: Colors.red),
+                        );
+                      },
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Закрыть'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _buildDetailRow(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 100,
+            child: Text(
+              label,
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Flexible(
+            child: Text(value),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _getRequestStatus(Request request) {
+    if (request.closedAt != null) return 'закрыта';
+    if (request.mechanicId != null) return 'в работе';
+    return 'новая';
+  }
+
+  Color _getStatusColor(Request request) {
+    final status = _getRequestStatus(request);
+    switch (status) {
+      case 'новая':
+        return Colors.blue;
+      case 'в работе':
+        return Colors.orange;
+      case 'закрыта':
+        return Colors.green;
+      default:
+        return Colors.grey;
+    }
+  }
+
+  List<Request> _getFilteredAndSortedRequests() {
+    List<Request> filtered = List.from(requests);
+
+    if (_statusFilter != null) {
+      filtered = filtered.where((request) => _getRequestStatus(request) == _statusFilter).toList();
+    }
+
+    if (_transportFilter != null) {
+      filtered = filtered.where((request) {
+        final transport = transports.firstWhere(
+          (t) => t.id == request.transportId,
+          orElse: () => Transport(id: 0, type: '', serial: '', model: ''),
+        );
+        return transport.type == _transportFilter;
+      }).toList();
+    }
+
+    filtered.sort((a, b) {
+      if (_sortOrder == 'newest') {
+        return b.submittedAt.compareTo(a.submittedAt);
+      } else {
+        return a.submittedAt.compareTo(b.submittedAt);
+      }
+    });
+
+    return filtered;
+  }
+
+  void _showSortFilterDialog() {
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              title: const Text('Сортировка и фильтры'),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text(
+                      'Сортировка по дате:',
+                      style: TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    RadioListTile<String>(
+                      title: const Text('Сначала новые'),
+                      value: 'newest',
+                      groupValue: _sortOrder,
+                      onChanged: (String? value) {
+                        setDialogState(() {
+                          _sortOrder = value!;
+                        });
+                      },
+                    ),
+                    RadioListTile<String>(
+                      title: const Text('Сначала старые'),
+                      value: 'oldest',
+                      groupValue: _sortOrder,
+                      onChanged: (String? value) {
+                        setDialogState(() {
+                          _sortOrder = value!;
+                        });
+                      },
+                    ),
+                    
+                    const SizedBox(height: 16),
+                    const Divider(),
+                    const SizedBox(height: 8),
+                    
+                    const Text(
+                      'Фильтр по статусу:',
+                      style: TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    DropdownButtonFormField<String>(
+                      value: _statusFilter,
+                      items: [
+                        const DropdownMenuItem(
+                          value: null,
+                          child: Text('Все статусы'),
+                        ),
+                        ...['новая', 'в работе', 'закрыта'].map((String status) {
+                          return DropdownMenuItem(
+                            value: status,
+                            child: Text(status),
+                          );
+                        }).toList(),
+                      ],
+                      onChanged: (String? newValue) {
+                        setDialogState(() {
+                          _statusFilter = newValue;
+                        });
+                      },
+                      decoration: const InputDecoration(
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                    
+                    const SizedBox(height: 12),
+                    
+                    const Text(
+                      'Фильтр по типу транспорта:',
+                      style: TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    DropdownButtonFormField<String>(
+                      value: _transportFilter,
+                      items: [
+                        const DropdownMenuItem(
+                          value: null,
+                          child: Text('Все типы'),
+                        ),
+                        ..._transportTypes.map((String type) {
+                          return DropdownMenuItem(
+                            value: type,
+                            child: Text(type),
+                          );
+                        }).toList(),
+                      ],
+                      onChanged: (String? newValue) {
+                        setDialogState(() {
+                          _transportFilter = newValue;
+                        });
+                      },
+                      decoration: const InputDecoration(
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () {
+                    setState(() {
+                      _sortOrder = 'newest';
+                      _statusFilter = null;
+                      _transportFilter = null;
+                    });
+                    Navigator.of(context).pop();
+                  },
+                  child: const Text('Сбросить'),
+                ),
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  child: const Text('Применить'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final filteredRequests = _getFilteredAndSortedRequests();
+
+    return Stack(
+      children: [
+        Scaffold(
+          appBar: AppBar(
+            title: const Text('Мои заявки'),
+            actions: [
+              IconButton(
+                icon: const Icon(Icons.refresh),
+                onPressed: () {
+                  setState(() {
+                    _isLoading = true;
+                  });
+                  _loadUserRequests();
+                },
+                tooltip: 'Обновить',
+              ),
+              IconButton(
+                icon: const Icon(Icons.filter_list),
+                onPressed: _showSortFilterDialog,
+                tooltip: 'Сортировка и фильтры',
+              ),
+              IconButton(
+                icon: const Icon(Icons.account_circle),
+                onPressed: () => setState(() => _isAccountPanelOpen = true),
+                tooltip: 'Аккаунт',
+              ),
+            ],
+          ),
+          body: _isLoading
+              ? const Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      CircularProgressIndicator(),
+                      SizedBox(height: 16),
+                      Text('Загрузка заявок...'),
+                    ],
+                  ),
+                )
+              : filteredRequests.isEmpty
+                  ? Center(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          const Icon(Icons.list_alt, size: 80, color: Colors.grey),
+                          const SizedBox(height: 16),
+                          const Text(
+                            'Заявок нет',
+                            style: TextStyle(fontSize: 18, color: Colors.grey),
+                          ),
+                          const SizedBox(height: 8),
+                          const Text(
+                            'Создайте первую заявку',
+                            style: TextStyle(color: Colors.grey),
+                          ),
+                          const SizedBox(height: 16),
+                          ElevatedButton(
+                            onPressed: _createRequest,
+                            child: const Text('Создать заявку'),
+                          ),
+                        ],
+                      ),
+                    )
+                  : ListView.builder(
+                      itemCount: filteredRequests.length,
+                      itemBuilder: (context, index) {
+                        final request = filteredRequests[index];
+                        final transport = transports.firstWhere(
+                          (t) => t.id == request.transportId,
+                          orElse: () => Transport(id: 0, type: 'Неизвестно', serial: 'Неизвестно', model: 'Неизвестно'),
+                        );
+                        
+                        final service = request.serviceId != null 
+                            ? services.firstWhere(
+                                (s) => s.id == request.serviceId,
+                                orElse: () => Service(id: 0, address: 'Не указан', workTime: ''),
+                              )
+                            : Service(id: 0, address: 'Не назначен', workTime: '');
+                        
+                        return Card(
+                          margin: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
+                          child: ListTile(
+                            leading: Container(
+                              width: 8,
+                              decoration: BoxDecoration(
+                                color: _getStatusColor(request),
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                            ),
+                            title: Text(
+                              request.problem.length > 50
+                                  ? '${request.problem.substring(0, 50)}...'
+                                  : request.problem,
+                              style: const TextStyle(fontWeight: FontWeight.bold),
+                            ),
+                            subtitle: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text('${transport.type} • ${transport.model}'),
+                                Text('Сервис: ${service.address}', style: const TextStyle(fontSize: 12)),
+                                const SizedBox(height: 4),
+                                Row(
+                                  children: [
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                                      decoration: BoxDecoration(
+                                        color: _getStatusColor(request).withOpacity(0.1),
+                                        borderRadius: BorderRadius.circular(12),
+                                        border: Border.all(color: _getStatusColor(request)),
+                                      ),
+                                      child: Text(
+                                        _getRequestStatus(request),
+                                        style: TextStyle(
+                                          color: _getStatusColor(request),
+                                          fontSize: 12,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
+                                    ),
+                                    const Spacer(),
+                                    Text(
+                                      '${request.submittedAt.day}.${request.submittedAt.month}.${request.submittedAt.year}',
+                                      style: const TextStyle(
+                                        fontSize: 12,
+                                        color: Colors.grey,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ],
+                            ),
+                            onTap: () => _showRequestDetails(request),
+                          ),
+                        );
+                      },
+                    ),
+          floatingActionButton: FloatingActionButton(
+            onPressed: _createRequest,
+            child: const Icon(Icons.add),
+          ),
+        ),
+
+        if (_isAccountPanelOpen)
+          Positioned(
+            right: 0,
+            top: 0,
+            bottom: 0,
+            width: MediaQuery.of(context).size.width * 0.8,
+            child: Container(
+              decoration: BoxDecoration(
+                color: Colors.white,
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.3),
+                    blurRadius: 10,
+                  ),
+                ],
+              ),
+              child: Column(
+                children: [
+                  AppBar(
+                    title: const Text('Профиль'),
+                    leading: IconButton(
+                      icon: const Icon(Icons.close),
+                      onPressed: () => setState(() => _isAccountPanelOpen = false),
+                    ),
+                    actions: [
+                      IconButton(
+                        icon: const Icon(Icons.logout),
+                        onPressed: _logout,
+                        tooltip: 'Выйти',
+                      ),
+                    ],
+                  ),
+                  Expanded(
+                    child: SingleChildScrollView(
+                      padding: const EdgeInsets.all(16.0),
+                      child: Column(
+                        children: [
+                          GestureDetector(
+                            onTap: _pickProfileImage,
+                            child: Stack(
+                              children: [
+                                CircleAvatar(
+                                  radius: 50,
+                                  backgroundColor: Colors.blue,
+                                  backgroundImage: _selectedProfilePhotoBase64 != null
+                                      ? MemoryImage(base64Decode(_selectedProfilePhotoBase64!))
+                                      : (userPhoto != null && userPhoto!.isNotEmpty
+                                          ? MemoryImage(base64Decode(userPhoto!))
+                                          : null),
+                                  child: _selectedProfilePhotoBase64 == null && 
+                                         (userPhoto == null || userPhoto!.isEmpty)
+                                      ? const Icon(Icons.person, size: 50, color: Colors.white)
+                                      : null,
+                                ),
+                                Positioned(
+                                  bottom: 0,
+                                  right: 0,
+                                  child: Container(
+                                    padding: const EdgeInsets.all(4),
+                                    decoration: const BoxDecoration(
+                                      color: Colors.blue,
+                                      shape: BoxShape.circle,
+                                    ),
+                                    child: const Icon(Icons.camera_alt, size: 16, color: Colors.white),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(height: 20),
+                          Text(
+                            'Нажмите на фото для изменения',
+                            style: TextStyle(
+                              color: Colors.grey[600],
+                              fontSize: 12,
+                            ),
+                          ),
+                          const SizedBox(height: 20),
+                          TextField(
+                            controller: _nameController,
+                            decoration: const InputDecoration(
+                              labelText: 'Имя',
+                              border: OutlineInputBorder(),
+                            ),
+                          ),
+                          const SizedBox(height: 16),
+                          TextField(
+                            controller: _emailController,
+                            decoration: const InputDecoration(
+                              labelText: 'Email',
+                              border: OutlineInputBorder(),
+                            ),
+                            keyboardType: TextInputType.emailAddress,
+                          ),
+                          const SizedBox(height: 16),
+                          TextField(
+                            controller: _passwordController,
+                            decoration: const InputDecoration(
+                              labelText: 'Новый пароль (оставьте пустым, если не хотите менять)',
+                              border: OutlineInputBorder(),
+                            ),
+                            obscureText: true,
+                          ),
+                          const SizedBox(height: 30),
+                          SizedBox(
+                            width: double.infinity,
+                            height: 50,
+                            child: ElevatedButton(
+                              onPressed: _updateProfile,
+                              child: const Text('Сохранить изменения'),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+class Request {
+  final int id;
+  final String problem;
+  final DateTime submittedAt;
+  final DateTime? closedAt;
+  final int transportId;
+  final int applicantId;
+  final int? mechanicId;
+  final int? serviceId;
+
+  Request({
+    required this.id,
+    required this.problem,
+    required this.submittedAt,
+    this.closedAt,
+    required this.transportId,
+    required this.applicantId,
+    this.mechanicId,
+    this.serviceId,
+  });
+
+  factory Request.fromJson(Map<String, dynamic> json) {
+    DateTime parseDate(dynamic date) {
+      if (date == null) return DateTime.now();
+      try {
+        if (date is String) {
+          return DateTime.parse(date);
+        }
+        return DateTime.now();
+      } catch (e) {
+        print('Error parsing date: $date, error: $e');
+        return DateTime.now();
+      }
+    }
+
+    return Request(
+      id: json['id'] ?? 0,
+      problem: json['problem'] ?? 'Описание не указано',
+      submittedAt: parseDate(json['submittedAt']),
+      closedAt: json['closedAt'] != null ? parseDate(json['closedAt']) : null,
+      transportId: json['transportId'] ?? 0,
+      applicantId: json['applicantId'] ?? 0,
+      mechanicId: json['mechanicId'],
+      serviceId: json['serviceId'],
+    );
+  }
+}
+
+class Transport {
+  final int id;
+  final String type;
+  final String serial;
+  final String? photo;
+  final String model;
+
+  Transport({
+    required this.id,
+    required this.type,
+    required this.serial,
+    required this.model,
+    this.photo,
+  });
+
+  factory Transport.fromJson(Map<String, dynamic> json) {
+    return Transport(
+      id: json['id'] ?? 0,
+      type: json['type'] ?? 'Неизвестно',
+      serial: json['serial'] ?? 'Неизвестно',
+      model: json['model'] ?? 'Неизвестно',
+      photo: json['photo'],
+    );
+  }
+}
+
+class Service {
+  final int id;
+  final String address;
+  final String workTime;
+  final Manager? manager;
+  final List<Mechanic>? mechanics;
+
+  Service({
+    required this.id,
+    required this.address,
+    required this.workTime,
+    this.manager,
+    this.mechanics,
+  });
+
+  factory Service.fromJson(Map<String, dynamic> json) {
+    return Service(
+      id: json['id'] ?? 0,
+      address: json['address'] ?? 'Адрес не указан',
+      workTime: json['workTime'] ?? 'Время работы не указано',
+      manager: json['manager'] != null ? Manager.fromJson(json['manager']) : null,
+      mechanics: json['mechanics'] != null && json['mechanics'] is List
+          ? (json['mechanics'] as List).map((i) => Mechanic.fromJson(i)).toList()
+          : null,
+    );
+  }
+}
+
+class Manager {
+  final int id;
+  final String name;
+
+  Manager({required this.id, required this.name});
+
+  factory Manager.fromJson(Map<String, dynamic> json) {
+    return Manager(
+      id: json['id'] ?? 0,
+      name: json['name'] ?? 'Неизвестно',
+    );
+  }
+}
+
+class Mechanic {
+  final int id;
+  final String name;
+
+  Mechanic({required this.id, required this.name});
+
+  factory Mechanic.fromJson(Map<String, dynamic> json) {
+    return Mechanic(
+      id: json['id'] ?? 0,
+      name: json['name'] ?? 'Неизвестно',
+    );
+  }
+}
