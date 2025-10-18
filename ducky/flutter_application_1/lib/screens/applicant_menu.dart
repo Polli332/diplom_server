@@ -5,7 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:io';
 import 'package:http/http.dart' as http;
 import 'package:flutter/foundation.dart' show kIsWeb;
-import 'dart:html' as html; // Для веб-платформы
+import 'dart:html' as html;
 
 class ApplicantMenu extends StatefulWidget {
   const ApplicantMenu({super.key});
@@ -55,6 +55,43 @@ class _ApplicantMenuState extends State<ApplicantMenu> {
     _loadUserData();
   }
 
+  // Метод для загрузки данных пользователя с сервера
+  Future<void> _loadUserDataFromServer() async {
+    try {
+      print('Loading user data from server for user ID: $userId');
+      final response = await http.get(
+        Uri.parse('http://localhost:3000/user-data/applicant/$userId'),
+      );
+
+      if (response.statusCode == 200) {
+        final userData = json.decode(response.body);
+        print('User data loaded from server: $userData');
+        
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setInt('user_id', userData['id']);
+        await prefs.setString('user_name', userData['name']);
+        await prefs.setString('user_email', userData['email']);
+        if (userData['photo'] != null) {
+          await prefs.setString('user_photo', userData['photo']);
+        }
+        
+        setState(() {
+          userName = userData['name'];
+          userEmail = userData['email'];
+          userPhoto = userData['photo'];
+          _nameController.text = userName!;
+          _emailController.text = userEmail!;
+        });
+        
+        print('User data saved to SharedPreferences');
+      } else {
+        print('Failed to load user data from server: ${response.statusCode}');
+      }
+    } catch (e) {
+      print('Error loading user data from server: $e');
+    }
+  }
+
   Future<void> _loadUserData() async {
     final prefs = await SharedPreferences.getInstance();
     setState(() {
@@ -67,13 +104,22 @@ class _ApplicantMenuState extends State<ApplicantMenu> {
       _emailController.text = userEmail!;
     });
     
-    print('User loaded: ID=$userId, Name=$userName');
+    print('User loaded from SharedPreferences: ID=$userId, Name=$userName, Photo: ${userPhoto != null ? "exists" : "null"}');
+    
+    // Всегда загружаем актуальные данные с сервера
+    if (userId != null) {
+      await _loadUserDataFromServer();
+    }
     
     await Future.wait([
       _loadUserRequests(),
       _loadTransports(),
       _loadServices(),
     ]);
+    
+    setState(() {
+      _isLoading = false;
+    });
   }
 
   Future<void> _loadUserRequests() async {
@@ -89,19 +135,14 @@ class _ApplicantMenuState extends State<ApplicantMenu> {
         
         setState(() {
           requests = data.map((item) => Request.fromJson(item)).toList();
-          // Фильтруем заявки только текущего пользователя
           requests = requests.where((request) => request.applicantId == userId).toList();
-          
           print('Filtered requests for user $userId: ${requests.length}');
-          _isLoading = false;
         });
       } else {
         print('Error loading requests: ${response.statusCode}');
-        setState(() => _isLoading = false);
       }
     } catch (e) {
       print('Ошибка загрузки заявок: $e');
-      setState(() => _isLoading = false);
     }
   }
 
@@ -140,6 +181,33 @@ class _ApplicantMenuState extends State<ApplicantMenu> {
     } catch (e) {
       print('Ошибка загрузки сервисов: $e');
     }
+  }
+
+  // Метод для построения аватарки с обработкой ошибок
+  Widget _buildAvatar(String? photoBase64, double radius) {
+    if (photoBase64 != null && photoBase64.isNotEmpty) {
+      try {
+        if (photoBase64.length > 100) {
+          return CircleAvatar(
+            radius: radius,
+            backgroundColor: Colors.white,
+            backgroundImage: MemoryImage(base64Decode(photoBase64)),
+          );
+        }
+      } catch (e) {
+        print('Error decoding base64 image: $e');
+      }
+    }
+    
+    return CircleAvatar(
+      radius: radius,
+      backgroundColor: Colors.blue,
+      child: Icon(
+        Icons.person,
+        size: radius,
+        color: Colors.white,
+      ),
+    );
   }
 
   // Обновленный метод для выбора фото транспорта с поддержкой веб-платформы
@@ -451,7 +519,6 @@ class _ApplicantMenuState extends State<ApplicantMenu> {
       print('Starting to create new request...');
       print('Selected service ID: $_selectedServiceId');
 
-      // Создаем транспорт
       final transportResponse = await http.post(
         Uri.parse('http://localhost:3000/transports'),
         headers: {'Content-Type': 'application/json'},
@@ -468,7 +535,6 @@ class _ApplicantMenuState extends State<ApplicantMenu> {
         final transportId = transportData['id'];
         print('Transport created with ID: $transportId');
 
-        // Создаем заявку с выбранным сервисом
         final requestResponse = await http.post(
           Uri.parse('http://localhost:3000/requests'),
           headers: {'Content-Type': 'application/json'},
@@ -494,7 +560,6 @@ class _ApplicantMenuState extends State<ApplicantMenu> {
           _clearRequestForm();
           _showSuccess('Заявка успешно создана!');
           
-          // Обновляем список заявок
           await _loadUserRequests();
         } else {
           throw Exception('Failed to create request: ${requestResponse.statusCode}');
@@ -541,24 +606,29 @@ class _ApplicantMenuState extends State<ApplicantMenu> {
 
       if (_selectedProfilePhotoBase64 != null) {
         updateData['photo'] = _selectedProfilePhotoBase64;
+        print('Updating profile with new photo, length: ${_selectedProfilePhotoBase64!.length}');
       }
 
       if (_passwordController.text.trim().isNotEmpty) {
         updateData['password'] = _passwordController.text.trim();
       }
 
+      print('Sending update request for user $userId');
       final response = await http.put(
         Uri.parse('http://localhost:3000/applicants/$userId'),
         headers: {'Content-Type': 'application/json'},
         body: json.encode(updateData),
       );
 
+      print('Update response status: ${response.statusCode}');
+      
       if (response.statusCode == 200) {
         final prefs = await SharedPreferences.getInstance();
         await prefs.setString('user_name', _nameController.text.trim());
         await prefs.setString('user_email', _emailController.text.trim());
         if (_selectedProfilePhotoBase64 != null) {
           await prefs.setString('user_photo', _selectedProfilePhotoBase64!);
+          print('Photo saved to SharedPreferences');
         }
         
         setState(() {
@@ -573,6 +643,7 @@ class _ApplicantMenuState extends State<ApplicantMenu> {
 
         _showSuccess('Профиль успешно обновлен');
       } else {
+        print('Server error: ${response.statusCode}, body: ${response.body}');
         throw Exception('Ошибка сервера: ${response.statusCode}');
       }
     } catch (e) {
@@ -613,63 +684,108 @@ class _ApplicantMenuState extends State<ApplicantMenu> {
     showDialog(
       context: context,
       builder: (BuildContext context) {
-        return AlertDialog(
-          title: Text('Заявка #${request.id}'),
-          content: SingleChildScrollView(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                _buildDetailRow('Проблема:', request.problem),
-                _buildDetailRow('Статус:', _getRequestStatus(request)),
-                _buildDetailRow('Сервис:', service.address),
-                _buildDetailRow('Дата создания:', 
-                  '${request.submittedAt.day}.${request.submittedAt.month}.${request.submittedAt.year} ${request.submittedAt.hour}:${request.submittedAt.minute.toString().padLeft(2, '0')}'),
-                if (request.closedAt != null)
-                  _buildDetailRow('Дата закрытия:', 
-                    '${request.closedAt!.day}.${request.closedAt!.month}.${request.closedAt!.year}'),
-                const SizedBox(height: 16),
-                const Text(
-                  'Данные транспорта:',
-                  style: TextStyle(fontWeight: FontWeight.bold),
+        return Dialog(
+          backgroundColor: Colors.transparent,
+          child: Container(
+            width: MediaQuery.of(context).size.width * 0.9,
+            padding: const EdgeInsets.all(24),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(16),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.2),
+                  blurRadius: 10,
+                  spreadRadius: 2,
                 ),
-                _buildDetailRow('Тип:', transport.type),
-                _buildDetailRow('Серийный номер:', transport.serial),
-                _buildDetailRow('Модель:', transport.model),
-                if (transport.photo != null && transport.photo!.isNotEmpty) ...[
-                  const SizedBox(height: 8),
+              ],
+            ),
+            child: SingleChildScrollView(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
                   const Text(
-                    'Фото транспорта:',
-                    style: TextStyle(fontWeight: FontWeight.bold),
-                  ),
-                  const SizedBox(height: 8),
-                  Container(
-                    height: 150,
-                    width: double.infinity,
-                    decoration: BoxDecoration(
-                      border: Border.all(color: Colors.grey),
-                      borderRadius: BorderRadius.circular(8),
+                    'Детали заявки',
+                    style: TextStyle(
+                      fontSize: 24,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.blue,
                     ),
-                    child: Image.memory(
-                      base64Decode(transport.photo!),
-                      fit: BoxFit.cover,
-                      errorBuilder: (context, error, stackTrace) {
-                        return const Center(
-                          child: Icon(Icons.error, color: Colors.red),
-                        );
-                      },
+                  ),
+                  const SizedBox(height: 20),
+                  _buildDetailRow('Номер заявки:', '#${request.id}'),
+                  _buildDetailRow('Проблема:', request.problem),
+                  _buildDetailRow('Статус:', _getRequestStatus(request)),
+                  _buildDetailRow('Сервис:', service.address),
+                  _buildDetailRow('Дата создания:', 
+                    '${request.submittedAt.day}.${request.submittedAt.month}.${request.submittedAt.year} ${request.submittedAt.hour}:${request.submittedAt.minute.toString().padLeft(2, '0')}'),
+                  if (request.closedAt != null)
+                    _buildDetailRow('Дата закрытия:', 
+                      '${request.closedAt!.day}.${request.closedAt!.month}.${request.closedAt!.year}'),
+                  const SizedBox(height: 20),
+                  const Text(
+                    'Данные транспорта:',
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+                  ),
+                  const SizedBox(height: 10),
+                  _buildDetailRow('Тип:', transport.type),
+                  _buildDetailRow('Серийный номер:', transport.serial),
+                  _buildDetailRow('Модель:', transport.model),
+                  if (transport.photo != null && transport.photo!.isNotEmpty) ...[
+                    const SizedBox(height: 16),
+                    const Text(
+                      'Фото транспорта:',
+                      style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                    ),
+                    const SizedBox(height: 8),
+                    Container(
+                      height: 200,
+                      width: double.infinity,
+                      decoration: BoxDecoration(
+                        border: Border.all(color: Colors.grey),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(12),
+                        child: Image.memory(
+                          base64Decode(transport.photo!),
+                          fit: BoxFit.cover,
+                          errorBuilder: (context, error, stackTrace) {
+                            return const Center(
+                              child: Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Icon(Icons.error, color: Colors.red, size: 40),
+                                  SizedBox(height: 8),
+                                  Text('Ошибка загрузки изображения'),
+                                ],
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                    ),
+                  ],
+                  const SizedBox(height: 24),
+                  Center(
+                    child: SizedBox(
+                      width: 200,
+                      child: ElevatedButton(
+                        onPressed: () => Navigator.of(context).pop(),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.blue,
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                        ),
+                        child: const Text('Закрыть'),
+                      ),
                     ),
                   ),
                 ],
-              ],
+              ),
             ),
           ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(),
-              child: const Text('Закрыть'),
-            ),
-          ],
         );
       },
     );
@@ -677,20 +793,23 @@ class _ApplicantMenuState extends State<ApplicantMenu> {
 
   Widget _buildDetailRow(String label, String value) {
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4),
+      padding: const EdgeInsets.symmetric(vertical: 8),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           SizedBox(
-            width: 100,
+            width: 120,
             child: Text(
               label,
               style: const TextStyle(fontWeight: FontWeight.bold),
             ),
           ),
-          const SizedBox(width: 8),
-          Flexible(
-            child: Text(value),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              value,
+              style: const TextStyle(fontSize: 16),
+            ),
           ),
         ],
       ),
@@ -870,6 +989,110 @@ class _ApplicantMenuState extends State<ApplicantMenu> {
     );
   }
 
+  // НОВЫЙ ДИЗАЙН КАРТОЧКИ ЗАЯВКИ
+  Widget _buildRequestCard(Request request) {
+    final transport = transports.firstWhere(
+      (t) => t.id == request.transportId,
+      orElse: () => Transport(id: 0, type: 'Неизвестно', serial: 'Неизвестно', model: 'Неизвестно'),
+    );
+
+    final status = _getRequestStatus(request);
+    final statusColor = _getStatusColor(request);
+
+    return Card(
+      margin: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
+      elevation: 3,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: InkWell(
+        onTap: () => _showRequestDetails(request),
+        borderRadius: BorderRadius.circular(12),
+        child: Container(
+          padding: const EdgeInsets.all(16),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Фото транспорта
+              Container(
+                width: 80,
+                height: 80,
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.grey.shade300),
+                ),
+                child: transport.photo != null && transport.photo!.isNotEmpty
+                    ? ClipRRect(
+                        borderRadius: BorderRadius.circular(8),
+                        child: Image.memory(
+                          base64Decode(transport.photo!),
+                          fit: BoxFit.cover,
+                          errorBuilder: (context, error, stackTrace) {
+                            return const Center(
+                              child: Icon(Icons.error, color: Colors.red),
+                            );
+                          },
+                        ),
+                      )
+                    : const Center(
+                        child: Icon(Icons.directions_bus, size: 40, color: Colors.grey),
+                      ),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Название транспорта
+                    Text(
+                      transport.model,
+                      style: const TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.blue,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 8),
+                    // Описание проблемы
+                    Text(
+                      request.problem,
+                      style: const TextStyle(
+                        fontSize: 14,
+                        color: Colors.black87,
+                      ),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 8),
+                    // Статус заявки
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: statusColor.withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(color: statusColor),
+                      ),
+                      child: Text(
+                        status.toUpperCase(),
+                        style: TextStyle(
+                          color: statusColor,
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final filteredRequests = _getFilteredAndSortedRequests();
@@ -877,145 +1100,113 @@ class _ApplicantMenuState extends State<ApplicantMenu> {
     return Stack(
       children: [
         Scaffold(
-          appBar: AppBar(
-            title: const Text('Мои заявки'),
-            actions: [
-              IconButton(
-                icon: const Icon(Icons.refresh),
-                onPressed: () {
-                  setState(() {
-                    _isLoading = true;
-                  });
-                  _loadUserRequests();
-                },
-                tooltip: 'Обновить',
-              ),
-              IconButton(
-                icon: const Icon(Icons.filter_list),
-                onPressed: _showSortFilterDialog,
-                tooltip: 'Сортировка и фильтры',
-              ),
-              IconButton(
-                icon: const Icon(Icons.account_circle),
-                onPressed: () => setState(() => _isAccountPanelOpen = true),
-                tooltip: 'Аккаунт',
-              ),
-            ],
-          ),
-          body: _isLoading
-              ? const Center(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      CircularProgressIndicator(),
-                      SizedBox(height: 16),
-                      Text('Загрузка заявок...'),
-                    ],
-                  ),
-                )
-              : filteredRequests.isEmpty
-                  ? Center(
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          const Icon(Icons.list_alt, size: 80, color: Colors.grey),
-                          const SizedBox(height: 16),
-                          const Text(
-                            'Заявок нет',
-                            style: TextStyle(fontSize: 18, color: Colors.grey),
-                          ),
-                          const SizedBox(height: 8),
-                          const Text(
-                            'Создайте первую заявку',
-                            style: TextStyle(color: Colors.grey),
-                          ),
-                          const SizedBox(height: 16),
-                          ElevatedButton(
-                            onPressed: _createRequest,
-                            child: const Text('Создать заявку'),
-                          ),
-                        ],
+          appBar: null, // Убираем AppBar
+          body: Column(
+            children: [
+              // Кастомный заголовок вместо AppBar
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.fromLTRB(16, 40, 16, 16),
+                decoration: BoxDecoration(
+                  color: Colors.blue,
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.1),
+                      blurRadius: 4,
+                      offset: const Offset(0, 2),
+                    ),
+                  ],
+                ),
+                child: Row(
+                  children: [
+                    const Expanded(
+                      child: Text(
+                        'Мои заявки',
+                        style: TextStyle(
+                          fontSize: 24,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.white,
+                        ),
                       ),
-                    )
-                  : ListView.builder(
-                      itemCount: filteredRequests.length,
-                      itemBuilder: (context, index) {
-                        final request = filteredRequests[index];
-                        final transport = transports.firstWhere(
-                          (t) => t.id == request.transportId,
-                          orElse: () => Transport(id: 0, type: 'Неизвестно', serial: 'Неизвестно', model: 'Неизвестно'),
-                        );
-                        
-                        final service = request.serviceId != null 
-                            ? services.firstWhere(
-                                (s) => s.id == request.serviceId,
-                                orElse: () => Service(id: 0, address: 'Не указан', workTime: ''),
-                              )
-                            : Service(id: 0, address: 'Не назначен', workTime: '');
-                        
-                        return Card(
-                          margin: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
-                          child: ListTile(
-                            leading: Container(
-                              width: 8,
-                              decoration: BoxDecoration(
-                                color: _getStatusColor(request),
-                                borderRadius: BorderRadius.circular(4),
-                              ),
-                            ),
-                            title: Text(
-                              request.problem.length > 50
-                                  ? '${request.problem.substring(0, 50)}...'
-                                  : request.problem,
-                              style: const TextStyle(fontWeight: FontWeight.bold),
-                            ),
-                            subtitle: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.refresh, color: Colors.white),
+                      onPressed: () {
+                        setState(() {
+                          _isLoading = true;
+                        });
+                        _loadUserData();
+                      },
+                      tooltip: 'Обновить',
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.filter_list, color: Colors.white),
+                      onPressed: _showSortFilterDialog,
+                      tooltip: 'Сортировка и фильтры',
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.account_circle, color: Colors.white),
+                      onPressed: () => setState(() => _isAccountPanelOpen = true),
+                      tooltip: 'Аккаунт',
+                    ),
+                  ],
+                ),
+              ),
+              Expanded(
+                child: _isLoading
+                    ? const Center(
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            CircularProgressIndicator(),
+                            SizedBox(height: 16),
+                            Text('Загрузка заявок...'),
+                          ],
+                        ),
+                      )
+                    : filteredRequests.isEmpty
+                        ? Center(
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
                               children: [
-                                Text('${transport.type} • ${transport.model}'),
-                                Text('Сервис: ${service.address}', style: const TextStyle(fontSize: 12)),
-                                const SizedBox(height: 4),
-                                Row(
-                                  children: [
-                                    Container(
-                                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                                      decoration: BoxDecoration(
-                                        color: _getStatusColor(request).withOpacity(0.1),
-                                        borderRadius: BorderRadius.circular(12),
-                                        border: Border.all(color: _getStatusColor(request)),
-                                      ),
-                                      child: Text(
-                                        _getRequestStatus(request),
-                                        style: TextStyle(
-                                          color: _getStatusColor(request),
-                                          fontSize: 12,
-                                          fontWeight: FontWeight.bold,
-                                        ),
-                                      ),
-                                    ),
-                                    const Spacer(),
-                                    Text(
-                                      '${request.submittedAt.day}.${request.submittedAt.month}.${request.submittedAt.year}',
-                                      style: const TextStyle(
-                                        fontSize: 12,
-                                        color: Colors.grey,
-                                      ),
-                                    ),
-                                  ],
+                                const Icon(Icons.list_alt, size: 80, color: Colors.grey),
+                                const SizedBox(height: 16),
+                                const Text(
+                                  'Заявок нет',
+                                  style: TextStyle(fontSize: 18, color: Colors.grey),
+                                ),
+                                const SizedBox(height: 8),
+                                const Text(
+                                  'Создайте первую заявку',
+                                  style: TextStyle(color: Colors.grey),
+                                ),
+                                const SizedBox(height: 16),
+                                ElevatedButton(
+                                  onPressed: _createRequest,
+                                  child: const Text('Создать заявку'),
                                 ),
                               ],
                             ),
-                            onTap: () => _showRequestDetails(request),
+                          )
+                        : ListView.builder(
+                            itemCount: filteredRequests.length,
+                            itemBuilder: (context, index) {
+                              final request = filteredRequests[index];
+                              return _buildRequestCard(request);
+                            },
                           ),
-                        );
-                      },
-                    ),
+              ),
+            ],
+          ),
           floatingActionButton: FloatingActionButton(
             onPressed: _createRequest,
+            backgroundColor: Colors.blue,
+            foregroundColor: Colors.white,
             child: const Icon(Icons.add),
           ),
         ),
 
+        // Панель аккаунта
         if (_isAccountPanelOpen)
           Positioned(
             right: 0,
@@ -1034,19 +1225,36 @@ class _ApplicantMenuState extends State<ApplicantMenu> {
               ),
               child: Column(
                 children: [
-                  AppBar(
-                    title: const Text('Профиль'),
-                    leading: IconButton(
-                      icon: const Icon(Icons.close),
-                      onPressed: () => setState(() => _isAccountPanelOpen = false),
+                  // Кастомный заголовок для панели аккаунта
+                  Container(
+                    height: 80,
+                    padding: const EdgeInsets.fromLTRB(16, 40, 16, 16),
+                    decoration: const BoxDecoration(
+                      color: Colors.blue,
                     ),
-                    actions: [
-                      IconButton(
-                        icon: const Icon(Icons.logout),
-                        onPressed: _logout,
-                        tooltip: 'Выйти',
-                      ),
-                    ],
+                    child: Row(
+                      children: [
+                        IconButton(
+                          icon: const Icon(Icons.close, color: Colors.white),
+                          onPressed: () => setState(() => _isAccountPanelOpen = false),
+                        ),
+                        const SizedBox(width: 16),
+                        const Text(
+                          'Профиль',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 20,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        const Spacer(),
+                        IconButton(
+                          icon: const Icon(Icons.logout, color: Colors.white),
+                          onPressed: _logout,
+                          tooltip: 'Выйти',
+                        ),
+                      ],
+                    ),
                   ),
                   Expanded(
                     child: SingleChildScrollView(
@@ -1057,18 +1265,9 @@ class _ApplicantMenuState extends State<ApplicantMenu> {
                             onTap: _pickProfileImage,
                             child: Stack(
                               children: [
-                                CircleAvatar(
-                                  radius: 50,
-                                  backgroundColor: Colors.blue,
-                                  backgroundImage: _selectedProfilePhotoBase64 != null
-                                      ? MemoryImage(base64Decode(_selectedProfilePhotoBase64!))
-                                      : (userPhoto != null && userPhoto!.isNotEmpty
-                                          ? MemoryImage(base64Decode(userPhoto!))
-                                          : null),
-                                  child: _selectedProfilePhotoBase64 == null && 
-                                         (userPhoto == null || userPhoto!.isEmpty)
-                                      ? const Icon(Icons.person, size: 50, color: Colors.white)
-                                      : null,
+                                _buildAvatar(
+                                  _selectedProfilePhotoBase64 ?? userPhoto, 
+                                  50
                                 ),
                                 Positioned(
                                   bottom: 0,

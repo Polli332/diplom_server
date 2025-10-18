@@ -625,6 +625,46 @@ app.put("/update-photo/:type/:id", async (req, res) => {
   }
 });
 
+// ==================== ПОЛУЧЕНИЕ ДАННЫХ ПОЛЬЗОВАТЕЛЯ С ФОТО ====================
+app.get("/user-data/:type/:id", async (req, res) => {
+  try {
+    const { type, id } = req.params;
+    
+    let user;
+    switch (type) {
+      case 'manager':
+        user = await prisma.manager.findUnique({
+          where: { id: Number(id) },
+          select: { id: true, name: true, email: true, photo: true, serviceId: true }
+        });
+        break;
+      case 'mechanic':
+        user = await prisma.mechanic.findUnique({
+          where: { id: Number(id) },
+          select: { id: true, name: true, email: true, photo: true, serviceId: true }
+        });
+        break;
+      case 'applicant':
+        user = await prisma.applicant.findUnique({
+          where: { id: Number(id) },
+          select: { id: true, name: true, email: true, photo: true }
+        });
+        break;
+      default:
+        return res.status(400).json({ error: 'Invalid type' });
+    }
+    
+    if (user) {
+      res.json(user);
+    } else {
+      res.status(404).json({ error: 'User not found' });
+    }
+  } catch (error) {
+    console.error(`Error fetching user data for ${type}:`, error);
+    res.status(400).json({ error: error.message });
+  }
+});
+
 // ==================== СЕРВЕР ====================
 app.listen(PORT, () => {
   console.log(`🚀 Server running on http://localhost:${PORT}`);

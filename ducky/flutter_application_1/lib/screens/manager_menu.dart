@@ -1,5 +1,5 @@
 import 'dart:convert';
-import 'dart:html' as html; // Добавляем для веб-платформы
+import 'dart:html' as html;
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -23,11 +23,14 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
   String? serviceAddress;
   List<Request> requests = [];
   List<Mechanic> mechanics = [];
+  List<Transport> transports = [];
+  List<Applicant> applicants = [];
   bool _isAccountPanelOpen = false;
   String _sortOrder = 'newest';
   String? _statusFilter;
   String? _mechanicFilter;
   bool _isLoading = true;
+  bool _photoLoading = false;
 
   late TabController _tabController;
 
@@ -55,16 +58,130 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
     super.dispose();
   }
 
-  // Обновленный метод для выбора фото с поддержкой веб-платформы
+  // УПРОЩЕННЫЙ МЕТОД ЗАГРУЗКИ ФОТО С СЕРВЕРА
+  Future<void> _loadUserPhoto() async {
+    if (userId == null) return;
+    
+    setState(() {
+      _photoLoading = true;
+    });
+
+    try {
+      print('🔄 ЗАГРУЗКА ФОТО С СЕРВЕРА ДЛЯ USER_ID: $userId');
+      
+      // Пробуем загрузить фото напрямую из данных менеджера
+      final managerResponse = await http.get(
+        Uri.parse('http://localhost:3000/managers/$userId'),
+      );
+
+      if (managerResponse.statusCode == 200) {
+        final managerData = json.decode(managerResponse.body);
+        print('📊 ДАННЫЕ МЕНЕДЖЕРА: ${managerData.containsKey('photo')}');
+        
+        if (managerData['photo'] != null && managerData['photo'].isNotEmpty) {
+          final String photoBase64 = managerData['photo'];
+          print('✅ ФОТО НАЙДЕНО В ДАННЫХ МЕНЕДЖЕРА');
+          
+          // Сохраняем в SharedPreferences и состояние
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setString('user_photo', photoBase64);
+          
+          setState(() {
+            userPhoto = photoBase64;
+          });
+          return;
+        }
+      }
+
+      // Если в данных менеджера нет фото, пробуем отдельный эндпоинт
+      print('🔄 Пробуем загрузить фото через отдельный эндпоинт...');
+      final photoResponse = await http.get(
+        Uri.parse('http://localhost:3000/user-photo/manager/$userId'),
+      );
+
+      if (photoResponse.statusCode == 200) {
+        final photoData = json.decode(photoResponse.body);
+        print('📊 ДАННЫЕ ФОТО: ${photoData.containsKey('photo')}');
+        
+        if (photoData['photo'] != null && photoData['photo'].isNotEmpty) {
+          final String photoBase64 = photoData['photo'];
+          print('✅ ФОТО НАЙДЕНО В ОТДЕЛЬНОМ ЭНДПОИНТЕ');
+          
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setString('user_photo', photoBase64);
+          
+          setState(() {
+            userPhoto = photoBase64;
+          });
+          return;
+        }
+      }
+
+      // Если фото нет нигде
+      print('❌ ФОТО НЕ НАЙДЕНО НА СЕРВЕРЕ');
+      _setDefaultPhoto();
+
+    } catch (e) {
+      print('💥 ОШИБКА ЗАГРУЗКИ ФОТО: $e');
+      _setDefaultPhoto();
+    } finally {
+      setState(() {
+        _photoLoading = false;
+      });
+    }
+  }
+
+  // Метод для установки фото по умолчанию
+  void _setDefaultPhoto() {
+    setState(() {
+      userPhoto = null;
+    });
+  }
+
+  // Метод для построения аватарки
+  Widget _buildAvatar(String? photoBase64, double radius) {
+    if (_photoLoading) {
+      return CircleAvatar(
+        radius: radius,
+        backgroundColor: Colors.grey[300],
+        child: const CircularProgressIndicator(),
+      );
+    }
+
+    if (photoBase64 != null && photoBase64.isNotEmpty) {
+      try {
+        if (photoBase64.length > 100) {
+          return CircleAvatar(
+            radius: radius,
+            backgroundColor: Colors.white,
+            backgroundImage: MemoryImage(base64Decode(photoBase64)),
+            onBackgroundImageError: (exception, stackTrace) {
+              print('Ошибка загрузки изображения: $exception');
+            },
+          );
+        }
+      } catch (e) {
+        print('Ошибка декодирования base64 изображения: $e');
+      }
+    }
+    
+    return CircleAvatar(
+      radius: radius,
+      backgroundColor: Colors.blue,
+      child: Icon(
+        Icons.person,
+        size: radius,
+        color: Colors.white,
+      ),
+    );
+  }
+
+  // Обновленный метод для выбора фото
   Future<void> _pickImage() async {
     try {
-      print('Начало выбора фото менеджера...');
-      
-      // Для веб-платформы используем html.FileUploadInputElement
       if (kIsWeb) {
         await _pickImageWeb();
       } else {
-        // Для мобильных платформ используем стандартный image_picker
         final XFile? image = await _imagePicker.pickImage(
           source: ImageSource.gallery,
           imageQuality: 50,
@@ -76,7 +193,6 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
         }
       }
     } catch (e) {
-      print('Ошибка выбора фото: $e');
       _showError('Ошибка выбора фото: $e');
     }
   }
@@ -101,9 +217,6 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
         final List<int> bytes = List<int>.from(reader.result as List<int>);
         final base64Image = base64Encode(bytes);
         
-        print('Фото выбрано на веб-платформе, размер: ${bytes.length} байт');
-        
-        // Обновляем фото менеджера
         await _updateManagerPhoto(base64Image);
       }
     }
@@ -112,13 +225,8 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
   // Метод для обработки файла изображения
   Future<void> _processImageFile(File imageFile, String type) async {
     try {
-      print('Обработка файла: ${imageFile.path}');
       final bytes = await imageFile.readAsBytes();
-      print('Размер фото: ${bytes.length} байт');
       final base64Image = base64Encode(bytes);
-      print('Base64 длина: ${base64Image.length} символов');
-      
-      await _testPhoto(base64Image, '${type}_test');
       
       if (type == 'manager') {
         await _updateManagerPhoto(base64Image);
@@ -129,14 +237,20 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
         _showSuccess('Фото механика выбрано');
       }
     } catch (e) {
-      print('Ошибка обработки файла: $e');
       _showError('Ошибка обработки файла: $e');
     }
   }
 
-  // Метод для обновления фото менеджера
+  // УЛУЧШЕННЫЙ МЕТОД ОБНОВЛЕНИЯ ФОТО
   Future<void> _updateManagerPhoto(String base64Image) async {
+    setState(() {
+      _photoLoading = true;
+    });
+
     try {
+      print('🔄 ОБНОВЛЕНИЕ ФОТО НА СЕРВЕРЕ...');
+      
+      // Обновляем фото в данных менеджера
       final response = await http.put(
         Uri.parse('http://localhost:3000/managers/$userId'),
         headers: {'Content-Type': 'application/json'},
@@ -145,29 +259,38 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
         }),
       );
 
-      print('Статус ответа: ${response.statusCode}');
+      print('📊 СТАТУС ОТВЕТА: ${response.statusCode}');
       
       if (response.statusCode == 200) {
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.setString('user_photo', base64Image);
+        // НЕМЕДЛЕННО обновляем состояние
         setState(() {
           userPhoto = base64Image;
         });
+        
+        // Сохраняем в SharedPreferences
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString('user_photo', base64Image);
+        
         _showSuccess('Фото профиля обновлено');
+        print('✅ ФОТО УСПЕШНО ОБНОВЛЕНО');
+        
+        // ПЕРЕЗАГРУЖАЕМ ДАННЫЕ ДЛЯ ПРОВЕРКИ
+        await _loadUserPhoto();
       } else {
         _showError('Ошибка сервера: ${response.statusCode}');
       }
     } catch (e) {
-      print('Ошибка обновления фото: $e');
       _showError('Ошибка обновления фото: $e');
+    } finally {
+      setState(() {
+        _photoLoading = false;
+      });
     }
   }
 
-  // Обновленный метод для выбора фото механика
+  // ДОБАВЛЕН МЕТОД ДЛЯ ВЫБОРА ФОТО МЕХАНИКА
   Future<void> _pickMechanicImage() async {
     try {
-      print('Начало выбора фото механика...');
-      
       if (kIsWeb) {
         await _pickMechanicImageWeb();
       } else {
@@ -182,7 +305,6 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
         }
       }
     } catch (e) {
-      print('Ошибка выбора фото механика: $e');
       _showError('Ошибка выбора фото механика: $e');
     }
   }
@@ -207,8 +329,6 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
         final List<int> bytes = List<int>.from(reader.result as List<int>);
         final base64Image = base64Encode(bytes);
         
-        print('Фото механика выбрано на веб-платформе, размер: ${bytes.length} байт');
-        
         setState(() {
           _selectedMechanicPhotoBase64 = base64Image;
         });
@@ -217,39 +337,7 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
     }
   }
 
-  // Альтернативный метод для веб-платформы с использованием image_picker_web
-  Future<void> _pickImageWebAlternative() async {
-    try {
-      // Если у вас установлен image_picker_web, можно использовать его
-      // final image = await ImagePickerWeb.getImageAsFile();
-      // if (image != null) {
-      //   await _processImageFile(File(image.name), 'manager');
-      // }
-      
-      // Временное решение - показать сообщение
-      _showError('Для выбора фото на веб-платформе используйте стандартный диалог выбора файлов');
-    } catch (e) {
-      print('Ошибка альтернативного метода: $e');
-    }
-  }
-
-  Future<void> _testPhoto(String photo, String testName) async {
-    try {
-      final response = await http.post(
-        Uri.parse('http://localhost:3000/test/photo'),
-        headers: {'Content-Type': 'application/json'},
-        body: json.encode({
-          'photo': photo,
-          'testName': testName,
-        }),
-      );
-      print('Тест фото $testName: ${response.statusCode}');
-    } catch (e) {
-      print('Ошибка теста фото: $e');
-    }
-  }
-
-  // Остальные методы остаются без изменений...
+  // УЛУЧШЕННЫЙ МЕТОД ЗАГРУЗКИ ДАННЫХ
   Future<void> _loadUserData() async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -257,18 +345,22 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
         userId = prefs.getInt('user_id');
         userName = prefs.getString('user_name') ?? 'Менеджер';
         userEmail = prefs.getString('user_email') ?? 'Email не указан';
-        userPhoto = prefs.getString('user_photo');
         
         _nameController.text = userName!;
         _emailController.text = userEmail!;
       });
 
+      print('👤 ЗАГРУЖЕНЫ ДАННЫЕ: userId=$userId');
+
       if (userId != null) {
+        // ПЕРВОЕ ДЕЛО - ЗАГРУЖАЕМ ФОТО С СЕРВЕРА
+        await _loadUserPhoto();
         await _loadManagerService();
       } else {
         setState(() => _isLoading = false);
       }
     } catch (e) {
+      print('Ошибка загрузки данных пользователя: $e');
       setState(() => _isLoading = false);
     }
   }
@@ -316,6 +408,8 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
       await Future.wait([
         _loadServiceRequests(),
         _loadServiceMechanics(),
+        _loadTransports(),
+        _loadApplicants(),
       ]);
       setState(() => _isLoading = false);
     } catch (e) {
@@ -356,72 +450,193 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
     }
   }
 
+  Future<void> _loadTransports() async {
+    try {
+      final response = await http.get(Uri.parse('http://localhost:3000/transports'));
+      if (response.statusCode == 200) {
+        final List<dynamic> data = json.decode(response.body);
+        setState(() {
+          transports = data.map((item) => Transport.fromJson(item)).toList();
+        });
+      }
+    } catch (e) {
+      print('Error loading transports: $e');
+    }
+  }
+
+  Future<void> _loadApplicants() async {
+    try {
+      final response = await http.get(Uri.parse('http://localhost:3000/applicants'));
+      if (response.statusCode == 200) {
+        final List<dynamic> data = json.decode(response.body);
+        setState(() {
+          applicants = data.map((item) => Applicant.fromJson(item)).toList();
+        });
+      }
+    } catch (e) {
+      print('Error loading applicants: $e');
+    }
+  }
+
   void _showRequestDetails(Request request) {
     final applicant = request.applicant != null 
         ? Applicant.fromJson(request.applicant!)
-        : Applicant(name: 'Неизвестно', email: 'Неизвестно');
+        : applicants.firstWhere(
+            (a) => a.id == request.applicantId,
+            orElse: () => Applicant(id: 0, name: 'Неизвестно', email: 'Неизвестно'),
+          );
         
     final transport = request.transport != null
         ? Transport.fromJson(request.transport!)
-        : Transport(type: 'Неизвестно', model: 'Неизвестно', serial: 'Неизвестно');
+        : transports.firstWhere(
+            (t) => t.id == request.transportId,
+            orElse: () => Transport(id: 0, type: 'Неизвестно', model: 'Неизвестно', serial: 'Неизвестно'),
+          );
 
     final mechanic = _getRequestMechanic(request);
 
     showDialog(
       context: context,
       builder: (BuildContext context) {
-        return AlertDialog(
-          title: Text('Заявка #${request.id}'),
-          content: SingleChildScrollView(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                _buildDetailRow('Проблема:', request.problem),
-                _buildDetailRow('Статус:', request.status),
-                _buildDetailRow('Дата создания:', 
-                  '${request.submittedAt.day}.${request.submittedAt.month}.${request.submittedAt.year}'),
-                
-                const SizedBox(height: 16),
-                const Text('Данные заявителя:', style: TextStyle(fontWeight: FontWeight.bold)),
-                _buildDetailRow('Имя:', applicant.name),
-                _buildDetailRow('Email:', applicant.email),
-                
-                const SizedBox(height: 16),
-                const Text('Данные транспорта:', style: TextStyle(fontWeight: FontWeight.bold)),
-                _buildDetailRow('Тип:', transport.type),
-                _buildDetailRow('Модель:', transport.model),
-                _buildDetailRow('Серийный номер:', transport.serial),
-                
-                const SizedBox(height: 16),
-                const Text('Назначенный механик:', style: TextStyle(fontWeight: FontWeight.bold)),
-                _buildDetailRow('Имя:', mechanic?.name ?? 'Не назначен'),
-                _buildDetailRow('Email:', mechanic?.email ?? 'Не назначен'),
-                
-                if (request.closedAt != null) ...[
-                  const SizedBox(height: 16),
-                  _buildDetailRow('Дата закрытия:', 
-                    '${request.closedAt!.day}.${request.closedAt!.month}.${request.closedAt!.year}'),
-                ],
+        return Dialog(
+          backgroundColor: Colors.transparent,
+          child: Container(
+            width: MediaQuery.of(context).size.width * 0.9,
+            padding: const EdgeInsets.all(24),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(16),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.2),
+                  blurRadius: 10,
+                  spreadRadius: 2,
+                ),
               ],
             ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(),
-              child: const Text('Закрыть'),
+            child: SingleChildScrollView(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text(
+                    'Детали заявки',
+                    style: TextStyle(
+                      fontSize: 24,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.blue,
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                  _buildDetailRow('Номер заявки:', '#${request.id}'),
+                  _buildDetailRow('Проблема:', request.problem),
+                  _buildDetailRow('Статус:', request.status),
+                  _buildDetailRow('Дата создания:', 
+                    '${request.submittedAt.day}.${request.submittedAt.month}.${request.submittedAt.year} ${request.submittedAt.hour}:${request.submittedAt.minute.toString().padLeft(2, '0')}'),
+                  
+                  const SizedBox(height: 16),
+                  const Text('Данные заявителя:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+                  _buildDetailRow('Имя:', applicant.name),
+                  _buildDetailRow('Email:', applicant.email),
+                  
+                  const SizedBox(height: 16),
+                  const Text('Данные транспорта:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+                  _buildDetailRow('Тип:', transport.type),
+                  _buildDetailRow('Модель:', transport.model),
+                  _buildDetailRow('Серийный номер:', transport.serial),
+                  
+                  const SizedBox(height: 16),
+                  const Text('Назначенный механик:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+                  _buildDetailRow('Имя:', mechanic?.name ?? 'Не назначен'),
+                  _buildDetailRow('Email:', mechanic?.email ?? 'Не назначен'),
+                  
+                  if (transport.photo != null && transport.photo!.isNotEmpty) ...[
+                    const SizedBox(height: 16),
+                    const Text(
+                      'Фото транспорта:',
+                      style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                    ),
+                    const SizedBox(height: 8),
+                    Container(
+                      height: 200,
+                      width: double.infinity,
+                      decoration: BoxDecoration(
+                        border: Border.all(color: Colors.grey),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(12),
+                        child: Image.memory(
+                          base64Decode(transport.photo!),
+                          fit: BoxFit.cover,
+                          errorBuilder: (context, error, stackTrace) {
+                            return const Center(
+                              child: Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Icon(Icons.error, color: Colors.red, size: 40),
+                                  SizedBox(height: 8),
+                                  Text('Ошибка загрузки изображения'),
+                                ],
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                    ),
+                  ],
+                  
+                  if (request.closedAt != null) ...[
+                    const SizedBox(height: 16),
+                    _buildDetailRow('Дата закрытия:', 
+                      '${request.closedAt!.day}.${request.closedAt!.month}.${request.closedAt!.year}'),
+                  ],
+                  
+                  const SizedBox(height: 24),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                    children: [
+                      ElevatedButton(
+                        onPressed: () => Navigator.of(context).pop(),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.grey,
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 24),
+                        ),
+                        child: const Text('Закрыть'),
+                      ),
+                      if (request.status != 'отклонена')
+                        ElevatedButton(
+                          onPressed: () {
+                            Navigator.of(context).pop();
+                            _showMechanicAssignmentDialog(request);
+                          },
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.blue,
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 24),
+                          ),
+                          child: const Text('Назначить механика'),
+                        ),
+                      if (request.status != 'отклонена')
+                        ElevatedButton(
+                          onPressed: () {
+                            Navigator.of(context).pop();
+                            _showStatusChangeDialog(request);
+                          },
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.orange,
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 24),
+                          ),
+                          child: const Text('Сменить статус'),
+                        ),
+                    ],
+                  ),
+                ],
+              ),
             ),
-            if (request.status != 'отклонена')
-              ElevatedButton(
-                onPressed: () => _showMechanicAssignmentDialog(request),
-                child: const Text('Назначить механика'),
-              ),
-            if (request.status != 'отклонена')
-              ElevatedButton(
-                onPressed: () => _showStatusChangeDialog(request),
-                child: const Text('Сменить статус'),
-              ),
-          ],
+          ),
         );
       },
     );
@@ -714,7 +929,6 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
 
   Future<void> _createMechanic() async {
     try {
-      print('Создание механика...');
       final response = await http.post(
         Uri.parse('http://localhost:3000/mechanics'),
         headers: {'Content-Type': 'application/json'},
@@ -727,8 +941,6 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
           'serviceId': serviceId,
         }),
       );
-
-      print('Статус создания механика: ${response.statusCode}');
       
       if (response.statusCode == 200) {
         await _loadServiceMechanics();
@@ -738,7 +950,6 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
         _showError('Ошибка создания механика: ${response.statusCode}');
       }
     } catch (e) {
-      print('Ошибка создания механика: $e');
       _showError('Ошибка создания механика: $e');
     }
   }
@@ -769,7 +980,7 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
 
   Widget _buildDetailRow(String label, String value) {
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4),
+      padding: const EdgeInsets.symmetric(vertical: 8),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -780,8 +991,13 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
               style: const TextStyle(fontWeight: FontWeight.bold),
             ),
           ),
-          const SizedBox(width: 8),
-          Flexible(child: Text(value)),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              value,
+              style: const TextStyle(fontSize: 16),
+            ),
+          ),
         ],
       ),
     );
@@ -825,6 +1041,111 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
     });
 
     return filtered;
+  }
+
+  // НОВЫЙ ДИЗАЙН КАРТОЧКИ ЗАЯВКИ
+  Widget _buildRequestCard(Request request) {
+    final transport = request.transport != null
+        ? Transport.fromJson(request.transport!)
+        : transports.firstWhere(
+            (t) => t.id == request.transportId,
+            orElse: () => Transport(id: 0, type: 'Неизвестно', model: 'Неизвестно', serial: 'Неизвестно'),
+          );
+
+    final statusColor = _getStatusColor(request.status);
+
+    return Card(
+      margin: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
+      elevation: 3,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: InkWell(
+        onTap: () => _showRequestDetails(request),
+        borderRadius: BorderRadius.circular(12),
+        child: Container(
+          padding: const EdgeInsets.all(16),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Фото транспорта
+              Container(
+                width: 80,
+                height: 80,
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.grey.shade300),
+                ),
+                child: transport.photo != null && transport.photo!.isNotEmpty
+                    ? ClipRRect(
+                        borderRadius: BorderRadius.circular(8),
+                        child: Image.memory(
+                          base64Decode(transport.photo!),
+                          fit: BoxFit.cover,
+                          errorBuilder: (context, error, stackTrace) {
+                            return const Center(
+                              child: Icon(Icons.error, color: Colors.red),
+                            );
+                          },
+                        ),
+                      )
+                    : const Center(
+                        child: Icon(Icons.directions_bus, size: 40, color: Colors.grey),
+                      ),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Название транспорта
+                    Text(
+                      transport.model,
+                      style: const TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.blue,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 8),
+                    // Описание проблемы
+                    Text(
+                      request.problem,
+                      style: const TextStyle(
+                        fontSize: 14,
+                        color: Colors.black87,
+                      ),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 8),
+                    // Статус заявки
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: statusColor.withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(color: statusColor),
+                      ),
+                      child: Text(
+                        request.status.toUpperCase(),
+                        style: TextStyle(
+                          color: statusColor,
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   void _showSortFilterDialog() {
@@ -982,6 +1303,7 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
     }
   }
 
+  // Обновленный метод построения панели профиля
   Widget _buildProfilePanel() {
     return Material(
       color: Colors.transparent,
@@ -1015,20 +1337,7 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
                           onTap: _pickImage,
                           child: Stack(
                             children: [
-                              CircleAvatar(
-                                radius: 50,
-                                backgroundColor: Colors.white,
-                                child: userPhoto != null && userPhoto!.isNotEmpty
-                                    ? ClipOval(
-                                        child: Image.memory(
-                                          base64Decode(userPhoto!),
-                                          width: 100,
-                                          height: 100,
-                                          fit: BoxFit.cover,
-                                        ),
-                                      )
-                                    : const Icon(Icons.person, size: 50, color: Colors.blue),
-                              ),
+                              _buildAvatar(userPhoto, 50),
                               Positioned(
                                 bottom: 0,
                                 right: 0,
@@ -1065,13 +1374,23 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
                       ],
                     ),
                   ),
-                  // Кнопка закрытия
+                  // Кнопка закрытия в левом углу
+                  Positioned(
+                    top: 16,
+                    left: 16,
+                    child: IconButton(
+                      icon: const Icon(Icons.close, color: Colors.white),
+                      onPressed: () => setState(() => _isAccountPanelOpen = false),
+                    ),
+                  ),
+                  // Кнопка выхода в правом углу
                   Positioned(
                     top: 16,
                     right: 16,
                     child: IconButton(
-                      icon: const Icon(Icons.close, color: Colors.white),
-                      onPressed: () => setState(() => _isAccountPanelOpen = false),
+                      icon: const Icon(Icons.logout, color: Colors.white),
+                      onPressed: _logout,
+                      tooltip: 'Выйти из аккаунта',
                     ),
                   ),
                 ],
@@ -1146,32 +1465,26 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
                       obscureText: true
                     ),
                     const SizedBox(height: 30),
-                    // Кнопки
+                    // Кнопка сохранить изменения (белая без иконки)
                     SizedBox(
                       width: double.infinity, 
                       height: 50, 
-                      child: ElevatedButton.icon(
+                      child: ElevatedButton(
                         onPressed: _updateProfile, 
-                        icon: const Icon(Icons.save),
-                        label: const Text('Сохранить изменения'),
                         style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.blue[700],
+                          backgroundColor: Colors.white,
+                          foregroundColor: Colors.blue[700],
+                          side: BorderSide(color: Colors.blue[700]!),
+                          elevation: 2,
+                        ),
+                        child: const Text(
+                          'Сохранить изменения',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w600,
+                          ),
                         ),
                       )
-                    ),
-                    const SizedBox(height: 16),
-                    SizedBox(
-                      width: double.infinity,
-                      height: 50,
-                      child: OutlinedButton.icon(
-                        onPressed: _logout,
-                        icon: const Icon(Icons.logout),
-                        label: const Text('Выйти'),
-                        style: OutlinedButton.styleFrom(
-                          foregroundColor: Colors.red,
-                          side: const BorderSide(color: Colors.red),
-                        ),
-                      ),
                     ),
                   ],
                 ),
@@ -1232,30 +1545,7 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
                           itemCount: filteredRequests.length,
                           itemBuilder: (context, index) {
                             final request = filteredRequests[index];
-                            final mechanic = _getRequestMechanic(request);
-                            return Card(
-                              margin: const EdgeInsets.symmetric(
-                                  vertical: 4, horizontal: 8),
-                              child: ListTile(
-                                leading: Container(
-                                  width: 8,
-                                  decoration: BoxDecoration(
-                                    color: _getStatusColor(request.status),
-                                    borderRadius: BorderRadius.circular(4),
-                                  ),
-                                ),
-                                title: Text(request.problem),
-                                subtitle: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text('Статус: ${request.status}'),
-                                    Text(
-                                        'Механик: ${mechanic?.name ?? 'Не назначен'}'),
-                                  ],
-                                ),
-                                onTap: () => _showRequestDetails(request),
-                              ),
-                            );
+                            return _buildRequestCard(request);
                           },
                         ),
               // Вкладка механиков
@@ -1282,16 +1572,7 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
                                       margin: const EdgeInsets.symmetric(
                                           vertical: 4, horizontal: 8),
                                       child: ListTile(
-                                        leading: CircleAvatar(
-                                          backgroundColor: Colors.blue,
-                                          child: Text(
-                                            mechanic.name.isNotEmpty
-                                                ? mechanic.name[0].toUpperCase()
-                                                : 'M',
-                                            style: const TextStyle(
-                                                color: Colors.white),
-                                          ),
-                                        ),
+                                        leading: _buildAvatar(mechanic.photo, 20),
                                         title: Text(mechanic.name),
                                         subtitle: Text(mechanic.email),
                                         trailing: IconButton(
@@ -1317,7 +1598,7 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
             color: Colors.black54,
           ),
 
-        // панель профиля — теперь рисуется поверх всего
+        // панель профиля
         if (_isAccountPanelOpen)
           Positioned(
             right: 0,
@@ -1382,6 +1663,7 @@ class Mechanic {
   final int id;
   final String name;
   final String email;
+  final String? photo;
   final int serviceId;
 
   Mechanic({
@@ -1389,6 +1671,7 @@ class Mechanic {
     required this.name,
     required this.email,
     required this.serviceId,
+    this.photo,
   });
 
   factory Mechanic.fromJson(Map<String, dynamic> json) {
@@ -1397,18 +1680,21 @@ class Mechanic {
       name: json['name'] ?? 'Неизвестно',
       email: json['email'] ?? 'Неизвестно',
       serviceId: json['serviceId'] ?? 0,
+      photo: json['photo'],
     );
   }
 }
 
 class Applicant {
+  final int id;
   final String name;
   final String email;
 
-  Applicant({required this.name, required this.email});
+  Applicant({required this.id, required this.name, required this.email});
 
   factory Applicant.fromJson(Map<String, dynamic> json) {
     return Applicant(
+      id: json['id'] ?? 0,
       name: json['name'] ?? 'Неизвестно',
       email: json['email'] ?? 'Неизвестно',
     );
@@ -1416,17 +1702,27 @@ class Applicant {
 }
 
 class Transport {
+  final int id;
   final String type;
-  final String model;
   final String serial;
+  final String? photo;
+  final String model;
 
-  Transport({required this.type, required this.model, required this.serial});
+  Transport({
+    required this.id,
+    required this.type,
+    required this.serial,
+    required this.model,
+    this.photo,
+  });
 
   factory Transport.fromJson(Map<String, dynamic> json) {
     return Transport(
+      id: json['id'] ?? 0,
       type: json['type'] ?? 'Неизвестно',
-      model: json['model'] ?? 'Неизвестно',
       serial: json['serial'] ?? 'Неизвестно',
+      model: json['model'] ?? 'Неизвестно',
+      photo: json['photo'],
     );
   }
 }

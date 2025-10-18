@@ -8,11 +8,6 @@ class ClientHomePage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Панель заявителя'),
-        backgroundColor: Colors.blue,
-        foregroundColor: Colors.white,
-      ),
       body: const ApplicantMenu(),
     );
   }
@@ -24,11 +19,6 @@ class ManagerHomePage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Панель менеджера'),
-        backgroundColor: Colors.green,
-        foregroundColor: Colors.white,
-      ),
       body: const ManagerMenu(),
     );
   }
@@ -40,11 +30,6 @@ class MechanicHomePage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Панель механика'),
-        backgroundColor: Colors.orange,
-        foregroundColor: Colors.white,
-      ),
       body: const Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
