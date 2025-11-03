@@ -5,7 +5,11 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:io';
 import 'package:http/http.dart' as http;
 import 'package:flutter/foundation.dart' show kIsWeb;
-import 'dart:html' as html;
+import 'package:file_picker/file_picker.dart';
+import '../global_config.dart';
+
+// Объявляем базовый URL в начале файла
+const String baseUrl = 'https://jvvrlmfl-3000.euw.devtunnels.ms'; // Замените на ваш публичный URL
 
 class ApplicantMenu extends StatefulWidget {
   const ApplicantMenu({super.key});
@@ -60,7 +64,7 @@ class _ApplicantMenuState extends State<ApplicantMenu> {
     try {
       print('Loading user data from server for user ID: $userId');
       final response = await http.get(
-        Uri.parse('http://localhost:3000/user-data/applicant/$userId'),
+        Uri.parse('$baseUrl/user-data/applicant/$userId'),
       );
 
       if (response.statusCode == 200) {
@@ -125,7 +129,7 @@ class _ApplicantMenuState extends State<ApplicantMenu> {
   Future<void> _loadUserRequests() async {
     try {
       print('Loading user requests for user ID: $userId');
-      final response = await http.get(Uri.parse('http://localhost:3000/requests'));
+      final response = await http.get(Uri.parse('$baseUrl/requests'));
       
       print('Requests response status: ${response.statusCode}');
       
@@ -148,7 +152,7 @@ class _ApplicantMenuState extends State<ApplicantMenu> {
 
   Future<void> _loadTransports() async {
     try {
-      final response = await http.get(Uri.parse('http://localhost:3000/transports'));
+      final response = await http.get(Uri.parse('$baseUrl/transports'));
       if (response.statusCode == 200) {
         final List<dynamic> data = json.decode(response.body);
         setState(() {
@@ -164,7 +168,7 @@ class _ApplicantMenuState extends State<ApplicantMenu> {
   Future<void> _loadServices() async {
     try {
       print('Loading services...');
-      final response = await http.get(Uri.parse('http://localhost:3000/services'));
+      final response = await http.get(Uri.parse('$baseUrl/services'));
       
       print('Services response status: ${response.statusCode}');
       
@@ -210,7 +214,7 @@ class _ApplicantMenuState extends State<ApplicantMenu> {
     );
   }
 
-  // Обновленный метод для выбора фото транспорта с поддержкой веб-платформы
+  // Обновленный метод для выбора фото транспорта с поддержкой всех платформ
   Future<void> _pickImage() async {
     try {
       print('Начало выбора фото транспорта...');
@@ -218,15 +222,7 @@ class _ApplicantMenuState extends State<ApplicantMenu> {
       if (kIsWeb) {
         await _pickImageWeb('transport');
       } else {
-        final XFile? image = await _imagePicker.pickImage(
-          source: ImageSource.gallery,
-          maxWidth: 800,
-          maxHeight: 800,
-          imageQuality: 80,
-        );
-        if (image != null) {
-          await _processImageFile(File(image.path), 'transport');
-        }
+        await _pickImageMobile('transport');
       }
     } catch (e) {
       print('Ошибка выбора фото транспорта: $e');
@@ -234,24 +230,16 @@ class _ApplicantMenuState extends State<ApplicantMenu> {
     }
   }
 
-  // Метод для выбора фото на веб-платформе
+  // Метод для выбора фото на веб-платформе с использованием file_picker
   Future<void> _pickImageWeb(String type) async {
-    final html.FileUploadInputElement input = html.FileUploadInputElement();
-    input.accept = 'image/*';
-    input.click();
+    try {
+      FilePickerResult? result = await FilePicker.platform.pickFiles(
+        type: FileType.image,
+        allowMultiple: false,
+      );
 
-    await input.onChange.first;
-
-    if (input.files!.isNotEmpty) {
-      final html.File file = input.files!.first;
-      final reader = html.FileReader();
-
-      reader.readAsArrayBuffer(file);
-
-      await reader.onLoadEnd.first;
-
-      if (reader.result != null) {
-        final List<int> bytes = List<int>.from(reader.result as List<int>);
+      if (result != null && result.files.single.bytes != null) {
+        final bytes = result.files.single.bytes!;
         final base64Image = base64Encode(bytes);
         
         print('Фото выбрано на веб-платформе, размер: ${bytes.length} байт');
@@ -268,6 +256,34 @@ class _ApplicantMenuState extends State<ApplicantMenu> {
           _showSuccess('Фото профиля выбрано');
         }
       }
+    } catch (e) {
+      print('Ошибка выбора фото на веб-платформе: $e');
+      _showError('Ошибка выбора фото: $e');
+    }
+  }
+
+  // Метод для выбора фото на мобильных платформах
+  Future<void> _pickImageMobile(String type) async {
+    try {
+      final XFile? image = await _imagePicker.pickImage(
+        source: ImageSource.gallery,
+        maxWidth: 800,
+        maxHeight: 800,
+        imageQuality: 80,
+      );
+      
+      if (image != null) {
+        if (kIsWeb) {
+          // Для веба используем file_picker
+          await _pickImageWeb(type);
+        } else {
+          // Для мобильных платформ
+          await _processImageFile(File(image.path), type);
+        }
+      }
+    } catch (e) {
+      print('Ошибка выбора фото на мобильной платформе: $e');
+      _showError('Ошибка выбора фото: $e');
     }
   }
 
@@ -297,7 +313,7 @@ class _ApplicantMenuState extends State<ApplicantMenu> {
     }
   }
 
-  // Обновленный метод для выбора фото профиля с поддержкой веб-платформы
+  // Обновленный метод для выбора фото профиля с поддержкой всех платформ
   Future<void> _pickProfileImage() async {
     try {
       print('Начало выбора фото профиля...');
@@ -305,16 +321,7 @@ class _ApplicantMenuState extends State<ApplicantMenu> {
       if (kIsWeb) {
         await _pickImageWeb('profile');
       } else {
-        final XFile? image = await _imagePicker.pickImage(
-          source: ImageSource.gallery,
-          maxWidth: 800,
-          maxHeight: 800,
-          imageQuality: 80,
-        );
-
-        if (image != null && mounted) {
-          await _processImageFile(File(image.path), 'profile');
-        }
+        await _pickImageMobile('profile');
       }
     } catch (e) {
       print('Ошибка выбора фото профиля: $e');
@@ -520,7 +527,7 @@ class _ApplicantMenuState extends State<ApplicantMenu> {
       print('Selected service ID: $_selectedServiceId');
 
       final transportResponse = await http.post(
-        Uri.parse('http://localhost:3000/transports'),
+        Uri.parse('$baseUrl/transports'),
         headers: {'Content-Type': 'application/json'},
         body: json.encode({
           'type': _selectedTransportType,
@@ -536,7 +543,7 @@ class _ApplicantMenuState extends State<ApplicantMenu> {
         print('Transport created with ID: $transportId');
 
         final requestResponse = await http.post(
-          Uri.parse('http://localhost:3000/requests'),
+          Uri.parse('$baseUrl/requests'),
           headers: {'Content-Type': 'application/json'},
           body: json.encode({
             'problem': _problemController.text.trim(),
@@ -615,7 +622,7 @@ class _ApplicantMenuState extends State<ApplicantMenu> {
 
       print('Sending update request for user $userId');
       final response = await http.put(
-        Uri.parse('http://localhost:3000/applicants/$userId'),
+        Uri.parse('$baseUrl/applicants/$userId'),
         headers: {'Content-Type': 'application/json'},
         body: json.encode(updateData),
       );

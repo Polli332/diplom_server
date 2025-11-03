@@ -1,11 +1,14 @@
 import 'dart:convert';
-import 'dart:html' as html;
 import 'package:flutter/material.dart';
-import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:io';
 import 'package:http/http.dart' as http;
 import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:file_picker/file_picker.dart';
+import '../global_config.dart';
+
+// Объявляем базовый URL в начале файла
+const String baseUrl = 'https://jvvrlmfl-3000.euw.devtunnels.ms'; // Замените на ваш публичный URL
 
 class ManagerMenu extends StatefulWidget {
   const ManagerMenu({super.key});
@@ -42,7 +45,6 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
   final TextEditingController _mechanicPasswordController = TextEditingController();
   String? _selectedMechanicPhotoBase64;
 
-  final ImagePicker _imagePicker = ImagePicker();
   final List<String> _statusList = ['новая', 'принята', 'в работе', 'отклонена'];
 
   @override
@@ -67,20 +69,16 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
     });
 
     try {
-      print('🔄 ЗАГРУЗКА ФОТО С СЕРВЕРА ДЛЯ USER_ID: $userId');
-      
       // Пробуем загрузить фото напрямую из данных менеджера
       final managerResponse = await http.get(
-        Uri.parse('http://localhost:3000/managers/$userId'),
+        Uri.parse('$baseUrl/managers/$userId'),
       );
 
       if (managerResponse.statusCode == 200) {
         final managerData = json.decode(managerResponse.body);
-        print('📊 ДАННЫЕ МЕНЕДЖЕРА: ${managerData.containsKey('photo')}');
         
         if (managerData['photo'] != null && managerData['photo'].isNotEmpty) {
           final String photoBase64 = managerData['photo'];
-          print('✅ ФОТО НАЙДЕНО В ДАННЫХ МЕНЕДЖЕРА');
           
           // Сохраняем в SharedPreferences и состояние
           final prefs = await SharedPreferences.getInstance();
@@ -94,18 +92,15 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
       }
 
       // Если в данных менеджера нет фото, пробуем отдельный эндпоинт
-      print('🔄 Пробуем загрузить фото через отдельный эндпоинт...');
       final photoResponse = await http.get(
-        Uri.parse('http://localhost:3000/user-photo/manager/$userId'),
+        Uri.parse('$baseUrl/user-photo/manager/$userId'),
       );
 
       if (photoResponse.statusCode == 200) {
         final photoData = json.decode(photoResponse.body);
-        print('📊 ДАННЫЕ ФОТО: ${photoData.containsKey('photo')}');
         
         if (photoData['photo'] != null && photoData['photo'].isNotEmpty) {
           final String photoBase64 = photoData['photo'];
-          print('✅ ФОТО НАЙДЕНО В ОТДЕЛЬНОМ ЭНДПОИНТЕ');
           
           final prefs = await SharedPreferences.getInstance();
           await prefs.setString('user_photo', photoBase64);
@@ -118,11 +113,9 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
       }
 
       // Если фото нет нигде
-      print('❌ ФОТО НЕ НАЙДЕНО НА СЕРВЕРЕ');
       _setDefaultPhoto();
 
     } catch (e) {
-      print('💥 ОШИБКА ЗАГРУЗКИ ФОТО: $e');
       _setDefaultPhoto();
     } finally {
       setState(() {
@@ -179,65 +172,19 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
   // Обновленный метод для выбора фото
   Future<void> _pickImage() async {
     try {
-      if (kIsWeb) {
-        await _pickImageWeb();
-      } else {
-        final XFile? image = await _imagePicker.pickImage(
-          source: ImageSource.gallery,
-          imageQuality: 50,
-          maxWidth: 800,
-        );
-        
-        if (image != null) {
-          await _processImageFile(File(image.path), 'manager');
-        }
-      }
-    } catch (e) {
-      _showError('Ошибка выбора фото: $e');
-    }
-  }
+      FilePickerResult? result = await FilePicker.platform.pickFiles(
+        type: FileType.image,
+        allowMultiple: false,
+      );
 
-  // Метод для выбора фото на веб-платформе
-  Future<void> _pickImageWeb() async {
-    final html.FileUploadInputElement input = html.FileUploadInputElement();
-    input.accept = 'image/*';
-    input.click();
-
-    await input.onChange.first;
-
-    if (input.files!.isNotEmpty) {
-      final html.File file = input.files!.first;
-      final reader = html.FileReader();
-
-      reader.readAsArrayBuffer(file);
-
-      await reader.onLoadEnd.first;
-
-      if (reader.result != null) {
-        final List<int> bytes = List<int>.from(reader.result as List<int>);
+      if (result != null && result.files.single.bytes != null) {
+        final bytes = result.files.single.bytes!;
         final base64Image = base64Encode(bytes);
         
         await _updateManagerPhoto(base64Image);
       }
-    }
-  }
-
-  // Метод для обработки файла изображения
-  Future<void> _processImageFile(File imageFile, String type) async {
-    try {
-      final bytes = await imageFile.readAsBytes();
-      final base64Image = base64Encode(bytes);
-      
-      if (type == 'manager') {
-        await _updateManagerPhoto(base64Image);
-      } else if (type == 'mechanic') {
-        setState(() {
-          _selectedMechanicPhotoBase64 = base64Image;
-        });
-        _showSuccess('Фото механика выбрано');
-      }
     } catch (e) {
-      _showError('Ошибка обработки файла: $e');
+      _showError('Ошибка выбора фото: $e');
     }
   }
 
@@ -248,18 +195,14 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
     });
 
     try {
-      print('🔄 ОБНОВЛЕНИЕ ФОТО НА СЕРВЕРЕ...');
-      
       // Обновляем фото в данных менеджера
       final response = await http.put(
-        Uri.parse('http://localhost:3000/managers/$userId'),
+        Uri.parse('$baseUrl/managers/$userId'),
         headers: {'Content-Type': 'application/json'},
         body: json.encode({
           'photo': base64Image,
         }),
       );
-
-      print('📊 СТАТУС ОТВЕТА: ${response.statusCode}');
       
       if (response.statusCode == 200) {
         // НЕМЕДЛЕННО обновляем состояние
@@ -272,7 +215,6 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
         await prefs.setString('user_photo', base64Image);
         
         _showSuccess('Фото профиля обновлено');
-        print('✅ ФОТО УСПЕШНО ОБНОВЛЕНО');
         
         // ПЕРЕЗАГРУЖАЕМ ДАННЫЕ ДЛЯ ПРОВЕРКИ
         await _loadUserPhoto();
@@ -291,42 +233,13 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
   // ДОБАВЛЕН МЕТОД ДЛЯ ВЫБОРА ФОТО МЕХАНИКА
   Future<void> _pickMechanicImage() async {
     try {
-      if (kIsWeb) {
-        await _pickMechanicImageWeb();
-      } else {
-        final XFile? image = await _imagePicker.pickImage(
-          source: ImageSource.gallery,
-          imageQuality: 50,
-          maxWidth: 800,
-        );
-        
-        if (image != null) {
-          await _processImageFile(File(image.path), 'mechanic');
-        }
-      }
-    } catch (e) {
-      _showError('Ошибка выбора фото механика: $e');
-    }
-  }
+      FilePickerResult? result = await FilePicker.platform.pickFiles(
+        type: FileType.image,
+        allowMultiple: false,
+      );
 
-  // Метод для выбора фото механика на веб-платформе
-  Future<void> _pickMechanicImageWeb() async {
-    final html.FileUploadInputElement input = html.FileUploadInputElement();
-    input.accept = 'image/*';
-    input.click();
-
-    await input.onChange.first;
-
-    if (input.files!.isNotEmpty) {
-      final html.File file = input.files!.first;
-      final reader = html.FileReader();
-
-      reader.readAsArrayBuffer(file);
-
-      await reader.onLoadEnd.first;
-
-      if (reader.result != null) {
-        final List<int> bytes = List<int>.from(reader.result as List<int>);
+      if (result != null && result.files.single.bytes != null) {
+        final bytes = result.files.single.bytes!;
         final base64Image = base64Encode(bytes);
         
         setState(() {
@@ -334,6 +247,8 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
         });
         _showSuccess('Фото механика выбрано');
       }
+    } catch (e) {
+      _showError('Ошибка выбора фото механика: $e');
     }
   }
 
@@ -350,8 +265,6 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
         _emailController.text = userEmail!;
       });
 
-      print('👤 ЗАГРУЖЕНЫ ДАННЫЕ: userId=$userId');
-
       if (userId != null) {
         // ПЕРВОЕ ДЕЛО - ЗАГРУЖАЕМ ФОТО С СЕРВЕРА
         await _loadUserPhoto();
@@ -367,7 +280,7 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
 
   Future<void> _loadManagerService() async {
     try {
-      final response = await http.get(Uri.parse('http://localhost:3000/managers/$userId'));
+      final response = await http.get(Uri.parse('$baseUrl/managers/$userId'));
       
       if (response.statusCode == 200) {
         final managerData = json.decode(response.body);
@@ -389,7 +302,7 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
 
   Future<void> _loadServiceDetails() async {
     try {
-      final response = await http.get(Uri.parse('http://localhost:3000/services/$serviceId'));
+      final response = await http.get(Uri.parse('$baseUrl/services/$serviceId'));
       if (response.statusCode == 200) {
         final serviceData = json.decode(response.body);
         setState(() {
@@ -419,7 +332,7 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
 
   Future<void> _loadServiceRequests() async {
     try {
-      final response = await http.get(Uri.parse('http://localhost:3000/requests'));
+      final response = await http.get(Uri.parse('$baseUrl/requests'));
       
       if (response.statusCode == 200) {
         final List<dynamic> data = json.decode(response.body);
@@ -436,7 +349,7 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
 
   Future<void> _loadServiceMechanics() async {
     try {
-      final response = await http.get(Uri.parse('http://localhost:3000/mechanics'));
+      final response = await http.get(Uri.parse('$baseUrl/mechanics'));
       if (response.statusCode == 200) {
         final List<dynamic> data = json.decode(response.body);
         List<Mechanic> allMechanics = data.map((item) => Mechanic.fromJson(item)).toList();
@@ -452,7 +365,7 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
 
   Future<void> _loadTransports() async {
     try {
-      final response = await http.get(Uri.parse('http://localhost:3000/transports'));
+      final response = await http.get(Uri.parse('$baseUrl/transports'));
       if (response.statusCode == 200) {
         final List<dynamic> data = json.decode(response.body);
         setState(() {
@@ -466,7 +379,7 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
 
   Future<void> _loadApplicants() async {
     try {
-      final response = await http.get(Uri.parse('http://localhost:3000/applicants'));
+      final response = await http.get(Uri.parse('$baseUrl/applicants'));
       if (response.statusCode == 200) {
         final List<dynamic> data = json.decode(response.body);
         setState(() {
@@ -765,7 +678,7 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
   Future<void> _assignMechanicToRequest(Request request, int mechanicId) async {
     try {
       final response = await http.put(
-        Uri.parse('http://localhost:3000/requests/${request.id}'),
+        Uri.parse('$baseUrl/requests/${request.id}'),
         headers: {'Content-Type': 'application/json'},
         body: json.encode({
           'mechanicId': mechanicId,
@@ -786,7 +699,7 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
   Future<void> _removeMechanicFromRequest(Request request) async {
     try {
       final response = await http.put(
-        Uri.parse('http://localhost:3000/requests/${request.id}'),
+        Uri.parse('$baseUrl/requests/${request.id}'),
         headers: {'Content-Type': 'application/json'},
         body: json.encode({
           'mechanicId': null,
@@ -813,7 +726,7 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
       }
 
       final response = await http.put(
-        Uri.parse('http://localhost:3000/requests/${request.id}'),
+        Uri.parse('$baseUrl/requests/${request.id}'),
         headers: {'Content-Type': 'application/json'},
         body: json.encode(updateData),
       );
@@ -930,7 +843,7 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
   Future<void> _createMechanic() async {
     try {
       final response = await http.post(
-        Uri.parse('http://localhost:3000/mechanics'),
+        Uri.parse('$baseUrl/mechanics'),
         headers: {'Content-Type': 'application/json'},
         body: json.encode({
           'name': _mechanicNameController.text.trim(),
@@ -964,7 +877,7 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
   Future<void> _deleteMechanic(Mechanic mechanic) async {
     try {
       final response = await http.delete(
-        Uri.parse('http://localhost:3000/mechanics/${mechanic.id}'),
+        Uri.parse('$baseUrl/mechanics/${mechanic.id}'),
       );
 
       if (response.statusCode == 200) {
@@ -1252,7 +1165,7 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
       }
 
       final response = await http.put(
-        Uri.parse('http://localhost:3000/managers/$userId'),
+        Uri.parse('$baseUrl/managers/$userId'),
         headers: {'Content-Type': 'application/json'},
         body: json.encode(updateData),
       );

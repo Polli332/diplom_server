@@ -665,6 +665,114 @@ app.get("/user-data/:type/:id", async (req, res) => {
   }
 });
 
+// ==================== ЭНДПОИНТЫ ДЛЯ МЕХАНИКА ====================
+
+// Получение заявок механика
+app.get("/mechanic/requests/:mechanicId", async (req, res) => {
+  try {
+    const { mechanicId } = req.params;
+    
+    const requests = await prisma.request.findMany({
+      where: { 
+        mechanicId: Number(mechanicId),
+        status: { not: "завершена" } // Не показываем завершенные заявки
+      },
+      include: { 
+        applicant: true, 
+        mechanic: true, 
+        transport: true, 
+        service: true 
+      },
+      orderBy: { submittedAt: 'desc' }
+    });
+    
+    console.log(`Returning ${requests.length} requests for mechanic ${mechanicId}`);
+    res.json(requests);
+  } catch (error) {
+    console.error('Error fetching mechanic requests:', error);
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// Завершение заявки
+app.put("/mechanic/requests/:id/complete", async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    const request = await prisma.request.update({
+      where: { id: Number(id) },
+      data: {
+        status: "завершена",
+        closedAt: new Date()
+      },
+      include: {
+        applicant: true,
+        mechanic: true,
+        transport: true,
+        service: true
+      }
+    });
+    
+    console.log(`Request ${id} completed by mechanic`);
+    res.json(request);
+  } catch (error) {
+    console.error('Error completing request:', error);
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// Обновление статуса заявки механиком
+app.put("/mechanic/requests/:id/status", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body;
+    
+    const request = await prisma.request.update({
+      where: { id: Number(id) },
+      data: { status },
+      include: {
+        applicant: true,
+        mechanic: true,
+        transport: true,
+        service: true
+      }
+    });
+    
+    console.log(`Request ${id} status updated to: ${status}`);
+    res.json(request);
+  } catch (error) {
+    console.error('Error updating request status:', error);
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// Получение данных механика с фото
+app.get("/mechanic/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    const mechanic = await prisma.mechanic.findUnique({
+      where: { id: Number(id) },
+      select: { 
+        id: true, 
+        name: true, 
+        email: true, 
+        photo: true, 
+        serviceId: true 
+      }
+    });
+    
+    if (mechanic) {
+      res.json(mechanic);
+    } else {
+      res.status(404).json({ error: 'Mechanic not found' });
+    }
+  } catch (error) {
+    console.error('Error fetching mechanic data:', error);
+    res.status(400).json({ error: error.message });
+  }
+});
+
 // ==================== СЕРВЕР ====================
 app.listen(PORT, () => {
   console.log(`🚀 Server running on http://localhost:${PORT}`);

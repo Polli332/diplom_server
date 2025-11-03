@@ -2,11 +2,11 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import '../models/user_model.dart';
+import '../global_config.dart';
 
 class ApiService {
-  // ЗАМЕНИ на адрес твоего сервера, если он не localhost или порт другой
-  // Если тестируешь на эмуляторе Android: http://10.0.2.2:3000
-  static const String baseUrl = 'http://localhost:3000';
+  // ЗАМЕНИ на твой публичный URL
+  static const String baseUrl = 'https://jvvrlmfl-3000.euw.devtunnels.ms';
 
   // helper: GET all from endpoint
   static Future<List<dynamic>> _getAll(String path) async {

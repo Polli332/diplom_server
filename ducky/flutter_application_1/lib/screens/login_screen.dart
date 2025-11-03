@@ -3,6 +3,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../services/api_service.dart';
 import '../models/user_model.dart';
 import 'home_pages.dart';
+import '../global_config.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -139,17 +140,48 @@ class _LoginScreenState extends State<LoginScreen> {
     );
   }
 
+  void _showSuccess(String text) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(text),
+        backgroundColor: Colors.green,
+        duration: const Duration(seconds: 2),
+        behavior: SnackBarBehavior.floating,
+      )
+    );
+  }
+
+  // Метод для очистки формы
+  void _clearForm() {
+    emailCtl.clear();
+    passCtl.clear();
+    nameCtl.clear();
+    _formKey.currentState?.reset();
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: Colors.grey[50],
       appBar: AppBar(
         title: Text(isLogin ? 'Вход в систему' : 'Регистрация'),
+        backgroundColor: Theme.of(context).primaryColor,
+        foregroundColor: Colors.white,
         actions: [
-          IconButton(
-            icon: const Icon(Icons.bug_report),
-            onPressed: _fillTestData,
-            tooltip: 'Заполнить тестовые данные',
-          ),
+          // Кнопка для тестовых данных
+          if (!_loading)
+            IconButton(
+              icon: const Icon(Icons.bug_report),
+              onPressed: _fillTestData,
+              tooltip: 'Заполнить тестовые данные',
+            ),
+          // Кнопка очистки формы
+          if (!_loading)
+            IconButton(
+              icon: const Icon(Icons.clear_all),
+              onPressed: _clearForm,
+              tooltip: 'Очистить форму',
+            ),
         ],
       ),
       body: Padding(
@@ -161,12 +193,20 @@ class _LoginScreenState extends State<LoginScreen> {
                   key: _formKey,
                   child: Column(
                     children: [
-                      // Заголовок
+                      // Заголовок с иконкой
                       const SizedBox(height: 20),
-                      Icon(
-                        isLogin ? Icons.login : Icons.person_add,
-                        size: 60,
-                        color: Theme.of(context).primaryColor,
+                      Container(
+                        width: 80,
+                        height: 80,
+                        decoration: BoxDecoration(
+                          color: Theme.of(context).primaryColor.withOpacity(0.1),
+                          shape: BoxShape.circle,
+                        ),
+                        child: Icon(
+                          isLogin ? Icons.login : Icons.person_add,
+                          size: 40,
+                          color: Theme.of(context).primaryColor,
+                        ),
                       ),
                       const SizedBox(height: 20),
                       Text(
@@ -176,6 +216,17 @@ class _LoginScreenState extends State<LoginScreen> {
                           fontWeight: FontWeight.bold,
                         ),
                       ),
+                      const SizedBox(height: 8),
+                      Text(
+                        isLogin 
+                            ? 'Введите ваши учетные данные' 
+                            : 'Заполните форму для регистрации',
+                        style: TextStyle(
+                          fontSize: 16,
+                          color: Colors.grey[600],
+                        ),
+                        textAlign: TextAlign.center,
+                      ),
                       const SizedBox(height: 30),
 
                       // Поля формы
@@ -184,8 +235,10 @@ class _LoginScreenState extends State<LoginScreen> {
                           controller: nameCtl,
                           decoration: const InputDecoration(
                             labelText: 'Полное имя',
-                            prefixIcon: Icon(Icons.person),
+                            prefixIcon: Icon(Icons.person_outline),
                             border: OutlineInputBorder(),
+                            filled: true,
+                            fillColor: Colors.white,
                           ),
                           validator: (v) => v == null || v.trim().isEmpty 
                               ? 'Введите ваше имя' 
@@ -198,13 +251,21 @@ class _LoginScreenState extends State<LoginScreen> {
                         controller: emailCtl,
                         decoration: const InputDecoration(
                           labelText: 'Email',
-                          prefixIcon: Icon(Icons.email),
+                          prefixIcon: Icon(Icons.email_outlined),
                           border: OutlineInputBorder(),
+                          filled: true,
+                          fillColor: Colors.white,
                         ),
                         keyboardType: TextInputType.emailAddress,
-                        validator: (v) => v == null || !v.contains('@') 
-                            ? 'Введите корректный email' 
-                            : null,
+                        validator: (v) {
+                          if (v == null || v.isEmpty) {
+                            return 'Введите email';
+                          }
+                          if (!v.contains('@') || !v.contains('.')) {
+                            return 'Введите корректный email';
+                          }
+                          return null;
+                        },
                       ),
                       const SizedBox(height: 16),
                       
@@ -212,13 +273,16 @@ class _LoginScreenState extends State<LoginScreen> {
                         controller: passCtl,
                         decoration: InputDecoration(
                           labelText: 'Пароль',
-                          prefixIcon: const Icon(Icons.lock),
+                          prefixIcon: const Icon(Icons.lock_outline),
                           border: const OutlineInputBorder(),
+                          filled: true,
+                          fillColor: Colors.white,
                           suffixIcon: IconButton(
                             icon: Icon(
                               _obscurePassword 
                                   ? Icons.visibility_off 
-                                  : Icons.visibility
+                                  : Icons.visibility,
+                              color: Colors.grey[600],
                             ),
                             onPressed: () => setState(() => 
                                 _obscurePassword = !_obscurePassword),
@@ -231,7 +295,7 @@ class _LoginScreenState extends State<LoginScreen> {
                       ),
                       const SizedBox(height: 30),
 
-                      // Кнопки
+                      // Основная кнопка
                       SizedBox(
                         width: double.infinity,
                         height: 50,
@@ -239,24 +303,102 @@ class _LoginScreenState extends State<LoginScreen> {
                           onPressed: _loading 
                               ? null 
                               : (isLogin ? _doLogin : _doRegister),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Theme.of(context).primaryColor,
+                            foregroundColor: Colors.white,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            elevation: 2,
+                          ),
                           child: Text(
                             isLogin ? 'Войти' : 'Зарегистрироваться',
-                            style: const TextStyle(fontSize: 16),
+                            style: const TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w600,
+                            ),
                           ),
                         ),
                       ),
                       const SizedBox(height: 20),
                       
-                      TextButton(
-                        onPressed: _loading 
-                            ? null 
-                            : () => setState(() => isLogin = !isLogin),
-                        child: Text(
-                          isLogin 
-                              ? 'Нет аккаунта? Зарегистрируйтесь' 
-                              : 'Уже есть аккаунт? Войти',
-                        ),
+                      // Переключение между входом и регистрацией
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Text(
+                            isLogin 
+                                ? 'Нет аккаунта?' 
+                                : 'Уже есть аккаунт?',
+                            style: TextStyle(
+                              color: Colors.grey[600],
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          TextButton(
+                            onPressed: _loading 
+                                ? null 
+                                : () {
+                                    setState(() {
+                                      isLogin = !isLogin;
+                                      _clearForm();
+                                    });
+                                  },
+                            style: TextButton.styleFrom(
+                              padding: EdgeInsets.zero,
+                              minimumSize: Size.zero,
+                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            ),
+                            child: Text(
+                              isLogin ? 'Зарегистрируйтесь' : 'Войти',
+                              style: TextStyle(
+                                color: Theme.of(context).primaryColor,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                        ],
                       ),
+
+                      // Информация о тестовых данных
+                      if (isLogin) ...[
+                        const SizedBox(height: 30),
+                        Container(
+                          padding: const EdgeInsets.all(16),
+                          decoration: BoxDecoration(
+                            color: Colors.blue[50],
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: Colors.blue[100]!),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  Icon(
+                                    Icons.info_outline,
+                                    color: Colors.blue[700],
+                                    size: 20,
+                                  ),
+                                  const SizedBox(width: 8),
+                                  const Text(
+                                    'Тестовые данные',
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      color: Colors.blue,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 8),
+                              const Text(
+                                'Для быстрой проверки используйте кнопку "🐞" в правом верхнем углу',
+                                style: TextStyle(fontSize: 12),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
                     ],
                   ),
                 ),
@@ -266,15 +408,37 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   Widget _buildLoading() {
-    return const Center(
+    return Center(
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          CircularProgressIndicator(),
-          SizedBox(height: 20),
-          Text('Выполняется вход...'),
+          const CircularProgressIndicator(),
+          const SizedBox(height: 20),
+          Text(
+            isLogin ? 'Выполняется вход...' : 'Регистрация...',
+            style: const TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'Пожалуйста, подождите',
+            style: TextStyle(
+              fontSize: 14,
+              color: Colors.grey[600],
+            ),
+          ),
         ],
       ),
     );
+  }
+
+  @override
+  void dispose() {
+    emailCtl.dispose();
+    passCtl.dispose();
+    nameCtl.dispose();
+    super.dispose();
   }
 }
