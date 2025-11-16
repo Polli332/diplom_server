@@ -1,3 +1,5 @@
+import 'dart:developer';
+
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../services/api_service.dart';
@@ -48,7 +50,7 @@ class _LoginScreenState extends State<LoginScreen> {
       print('✅ Успешная регистрация: ${user.role}');
       await _saveAndNavigate(user);
     } catch (e) {
-      print('❌ Ошибка регистрации: $e');
+      log('❌ Ошибка регистрации: $e');
       _showError('Ошибка регистрации: ${e.toString()}');
     } finally {
       if (mounted) {

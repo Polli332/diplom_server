@@ -1,11 +1,8 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'dart:io';
 import 'package:http/http.dart' as http;
-import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:file_picker/file_picker.dart';
-import '../global_config.dart';
 
 // Объявляем базовый URL в начале файла
 const String baseUrl = 'https://jvvrlmfl-3000.euw.devtunnels.ms'; // Замените на ваш публичный URL
@@ -57,6 +54,12 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
   @override
   void dispose() {
     _tabController.dispose();
+    _nameController.dispose();
+    _emailController.dispose();
+    _passwordController.dispose();
+    _mechanicNameController.dispose();
+    _mechanicEmailController.dispose();
+    _mechanicPasswordController.dispose();
     super.dispose();
   }
 
@@ -391,6 +394,7 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
     }
   }
 
+  // ИСПРАВЛЕННЫЙ МЕТОД ПОКАЗА ДЕТАЛЕЙ ЗАЯВКИ
   void _showRequestDetails(Request request) {
     final applicant = request.applicant != null 
         ? Applicant.fromJson(request.applicant!)
@@ -414,8 +418,8 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
         return Dialog(
           backgroundColor: Colors.transparent,
           child: Container(
-            width: MediaQuery.of(context).size.width * 0.9,
-            padding: const EdgeInsets.all(24),
+            width: MediaQuery.of(context).size.width * 0.95,
+            padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
               color: Colors.white,
               borderRadius: BorderRadius.circular(16),
@@ -435,43 +439,43 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
                   const Text(
                     'Детали заявки',
                     style: TextStyle(
-                      fontSize: 24,
+                      fontSize: 20,
                       fontWeight: FontWeight.bold,
                       color: Colors.blue,
                     ),
                   ),
-                  const SizedBox(height: 20),
+                  const SizedBox(height: 16),
                   _buildDetailRow('Номер заявки:', '#${request.id}'),
                   _buildDetailRow('Проблема:', request.problem),
                   _buildDetailRow('Статус:', request.status),
                   _buildDetailRow('Дата создания:', 
                     '${request.submittedAt.day}.${request.submittedAt.month}.${request.submittedAt.year} ${request.submittedAt.hour}:${request.submittedAt.minute.toString().padLeft(2, '0')}'),
                   
-                  const SizedBox(height: 16),
-                  const Text('Данные заявителя:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+                  const SizedBox(height: 12),
+                  const Text('Данные заявителя:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
                   _buildDetailRow('Имя:', applicant.name),
                   _buildDetailRow('Email:', applicant.email),
                   
-                  const SizedBox(height: 16),
-                  const Text('Данные транспорта:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+                  const SizedBox(height: 12),
+                  const Text('Данные транспорта:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
                   _buildDetailRow('Тип:', transport.type),
                   _buildDetailRow('Модель:', transport.model),
                   _buildDetailRow('Серийный номер:', transport.serial),
                   
-                  const SizedBox(height: 16),
-                  const Text('Назначенный механик:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+                  const SizedBox(height: 12),
+                  const Text('Назначенный механик:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
                   _buildDetailRow('Имя:', mechanic?.name ?? 'Не назначен'),
                   _buildDetailRow('Email:', mechanic?.email ?? 'Не назначен'),
                   
                   if (transport.photo != null && transport.photo!.isNotEmpty) ...[
-                    const SizedBox(height: 16),
+                    const SizedBox(height: 12),
                     const Text(
                       'Фото транспорта:',
-                      style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                      style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
                     ),
                     const SizedBox(height: 8),
                     Container(
-                      height: 200,
+                      height: 150,
                       width: double.infinity,
                       decoration: BoxDecoration(
                         border: Border.all(color: Colors.grey),
@@ -487,9 +491,9 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
                               child: Column(
                                 mainAxisAlignment: MainAxisAlignment.center,
                                 children: [
-                                  Icon(Icons.error, color: Colors.red, size: 40),
+                                  Icon(Icons.error, color: Colors.red, size: 30),
                                   SizedBox(height: 8),
-                                  Text('Ошибка загрузки изображения'),
+                                  Text('Ошибка загрузки изображения', style: TextStyle(fontSize: 12)),
                                 ],
                               ),
                             );
@@ -500,50 +504,62 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
                   ],
                   
                   if (request.closedAt != null) ...[
-                    const SizedBox(height: 16),
+                    const SizedBox(height: 12),
                     _buildDetailRow('Дата закрытия:', 
                       '${request.closedAt!.day}.${request.closedAt!.month}.${request.closedAt!.year}'),
                   ],
                   
-                  const SizedBox(height: 24),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                  const SizedBox(height: 20),
+                  // ИСПРАВЛЕННЫЕ КНОПКИ - ТЕПЕРЬ В КОЛОНКУ ДЛЯ МАЛЕНЬКИХ ЭКРАНОВ
+                  Column(
                     children: [
-                      ElevatedButton(
-                        onPressed: () => Navigator.of(context).pop(),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.grey,
-                          foregroundColor: Colors.white,
-                          padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 24),
+                      SizedBox(
+                        width: double.infinity,
+                        child: ElevatedButton(
+                          onPressed: () => Navigator.of(context).pop(),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.grey,
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                          ),
+                          child: const Text('Закрыть'),
                         ),
-                        child: const Text('Закрыть'),
                       ),
+                      const SizedBox(height: 8),
                       if (request.status != 'отклонена')
-                        ElevatedButton(
-                          onPressed: () {
-                            Navigator.of(context).pop();
-                            _showMechanicAssignmentDialog(request);
-                          },
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.blue,
-                            foregroundColor: Colors.white,
-                            padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 24),
+                        SizedBox(
+                          width: double.infinity,
+                          child: ElevatedButton(
+                            onPressed: () {
+                              Navigator.of(context).pop();
+                              _showMechanicAssignmentDialog(request);
+                            },
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.blue,
+                              foregroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(vertical: 12),
+                            ),
+                            child: const Text('Назначить механика'),
                           ),
-                          child: const Text('Назначить механика'),
                         ),
-                      if (request.status != 'отклонена')
-                        ElevatedButton(
-                          onPressed: () {
-                            Navigator.of(context).pop();
-                            _showStatusChangeDialog(request);
-                          },
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.orange,
-                            foregroundColor: Colors.white,
-                            padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 24),
+                      if (request.status != 'отклонена') ...[
+                        const SizedBox(height: 8),
+                        SizedBox(
+                          width: double.infinity,
+                          child: ElevatedButton(
+                            onPressed: () {
+                              Navigator.of(context).pop();
+                              _showStatusChangeDialog(request);
+                            },
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.orange,
+                              foregroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(vertical: 12),
+                            ),
+                            child: const Text('Сменить статус'),
                           ),
-                          child: const Text('Сменить статус'),
                         ),
+                      ],
                     ],
                   ),
                 ],
@@ -717,30 +733,41 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
     }
   }
 
-  Future<void> _updateRequestStatus(Request request, String newStatus) async {
-    try {
-      final updateData = {'status': newStatus};
-      
-      if (newStatus == 'отклонена') {
-        updateData['closedAt'] = DateTime.now().toIso8601String();
-      }
-
-      final response = await http.put(
-        Uri.parse('$baseUrl/requests/${request.id}'),
-        headers: {'Content-Type': 'application/json'},
-        body: json.encode(updateData),
-      );
-
-      if (response.statusCode == 200) {
-        await _loadServiceRequests();
-        _showSuccess('Статус заявки обновлен');
-      } else {
-        _showError('Ошибка обновления статуса: ${response.statusCode}');
-      }
-    } catch (e) {
-      _showError('Ошибка обновления статуса: $e');
+  // ИСПРАВЛЕННЫЙ МЕТОД ОБНОВЛЕНИЯ СТАТУСА ЗАЯВКИ
+  // ИСПРАВЛЕННЫЙ МЕТОД ОБНОВЛЕНИЯ СТАТУСА ЗАЯВКИ
+Future<void> _updateRequestStatus(Request request, String newStatus) async {
+  try {
+    final Map<String, dynamic> updateData = {'status': newStatus};
+    
+    if (newStatus == 'отклонена') {
+      updateData['closedAt'] = DateTime.now().toIso8601String();
+    } else if (newStatus == 'новая') {
+      // Если статус меняется обратно на "новая", убираем дату закрытия
+      updateData['closedAt'] = null;
     }
+
+    print('Updating request ${request.id} with status: $newStatus');
+    print('Update data: $updateData');
+
+    final response = await http.put(
+      Uri.parse('$baseUrl/requests/${request.id}'),
+      headers: {'Content-Type': 'application/json'},
+      body: json.encode(updateData),
+    );
+
+    if (response.statusCode == 200) {
+      await _loadServiceRequests();
+      _showSuccess('Статус заявки обновлен на "$newStatus"');
+    } else {
+      print('Server error: ${response.statusCode}');
+      print('Response body: ${response.body}');
+      _showError('Ошибка обновления статуса: ${response.statusCode}');
+    }
+  } catch (e) {
+    print('Error updating status: $e');
+    _showError('Ошибка обновления статуса: $e');
   }
+}
 
   void _showAddMechanicDialog() {
     showDialog(
@@ -893,7 +920,7 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
 
   Widget _buildDetailRow(String label, String value) {
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8),
+      padding: const EdgeInsets.symmetric(vertical: 6),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -901,14 +928,14 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
             width: 120,
             child: Text(
               label,
-              style: const TextStyle(fontWeight: FontWeight.bold),
+              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
             ),
           ),
-          const SizedBox(width: 12),
+          const SizedBox(width: 8),
           Expanded(
             child: Text(
               value,
-              style: const TextStyle(fontSize: 16),
+              style: const TextStyle(fontSize: 14),
             ),
           ),
         ],
@@ -918,10 +945,11 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
 
   Mechanic? _getRequestMechanic(Request request) {
     if (request.mechanicId == null) return null;
-    return mechanics.firstWhere(
-      (m) => m.id == request.mechanicId,
-      orElse: () => Mechanic(id: 0, name: 'Неизвестно', email: 'Неизвестно', serviceId: 0),
-    );
+    try {
+      return mechanics.firstWhere((m) => m.id == request.mechanicId);
+    } catch (e) {
+      return null;
+    }
   }
 
   Color _getStatusColor(String status) {
@@ -942,7 +970,7 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
     }
 
     if (_mechanicFilter != null) {
-      filtered = filtered.where((request) => request.mechanicId.toString() == _mechanicFilter).toList();
+      filtered = filtered.where((request) => request.mechanicId?.toString() == _mechanicFilter).toList();
     }
 
     filtered.sort((a, b) {
@@ -958,12 +986,17 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
 
   // НОВЫЙ ДИЗАЙН КАРТОЧКИ ЗАЯВКИ
   Widget _buildRequestCard(Request request) {
-    final transport = request.transport != null
-        ? Transport.fromJson(request.transport!)
-        : transports.firstWhere(
-            (t) => t.id == request.transportId,
-            orElse: () => Transport(id: 0, type: 'Неизвестно', model: 'Неизвестно', serial: 'Неизвестно'),
-          );
+    Transport transport;
+    try {
+      transport = request.transport != null
+          ? Transport.fromJson(request.transport!)
+          : transports.firstWhere(
+              (t) => t.id == request.transportId,
+              orElse: () => Transport(id: 0, type: 'Неизвестно', model: 'Неизвестно', serial: 'Неизвестно'),
+            );
+    } catch (e) {
+      transport = Transport(id: 0, type: 'Неизвестно', model: 'Неизвестно', serial: 'Неизвестно');
+    }
 
     final statusColor = _getStatusColor(request.status);
 
@@ -1065,84 +1098,96 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
     showDialog(
       context: context,
       builder: (BuildContext context) {
-        return AlertDialog(
-          title: const Text('Сортировка и фильтры'),
-          content: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Text('Сортировка по дате:', style: TextStyle(fontWeight: FontWeight.bold)),
-                RadioListTile<String>(
-                  title: const Text('Сначала новые'),
-                  value: 'newest',
-                  groupValue: _sortOrder,
-                  onChanged: (String? value) {
-                    setState(() {
-                      _sortOrder = value!;
-                    });
-                  },
-                ),
-                RadioListTile<String>(
-                  title: const Text('Сначала старые'),
-                  value: 'oldest',
-                  groupValue: _sortOrder,
-                  onChanged: (String? value) {
-                    setState(() {
-                      _sortOrder = value!;
-                    });
-                  },
-                ),
-                
-                const SizedBox(height: 16),
-                const Divider(),
-                const SizedBox(height: 8),
-                
-                const Text('Фильтр по статусу:', style: TextStyle(fontWeight: FontWeight.bold)),
-                DropdownButtonFormField<String>(
-                  value: _statusFilter,
-                  items: [
-                    const DropdownMenuItem(value: null, child: Text('Все статусы')),
-                    ..._statusList.map((status) => DropdownMenuItem(value: status, child: Text(status))),
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              title: const Text('Сортировка и фильтры'),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text('Сортировка по дате:', style: TextStyle(fontWeight: FontWeight.bold)),
+                    RadioListTile<String>(
+                      title: const Text('Сначала новые'),
+                      value: 'newest',
+                      groupValue: _sortOrder,
+                      onChanged: (String? value) {
+                        setState(() {
+                          _sortOrder = value!;
+                        });
+                        Navigator.of(context).pop();
+                      },
+                    ),
+                    RadioListTile<String>(
+                      title: const Text('Сначала старые'),
+                      value: 'oldest',
+                      groupValue: _sortOrder,
+                      onChanged: (String? value) {
+                        setState(() {
+                          _sortOrder = value!;
+                        });
+                        Navigator.of(context).pop();
+                      },
+                    ),
+                    
+                    const SizedBox(height: 16),
+                    const Divider(),
+                    const SizedBox(height: 8),
+                    
+                    const Text('Фильтр по статусу:', style: TextStyle(fontWeight: FontWeight.bold)),
+                    DropdownButtonFormField<String>(
+                      value: _statusFilter,
+                      items: [
+                        const DropdownMenuItem(value: null, child: Text('Все статусы')),
+                        ..._statusList.map((status) => DropdownMenuItem(value: status, child: Text(status))),
+                      ],
+                      onChanged: (String? newValue) {
+                        setState(() => _statusFilter = newValue);
+                        Navigator.of(context).pop();
+                      },
+                      decoration: const InputDecoration(border: OutlineInputBorder()),
+                    ),
+                    
+                    const SizedBox(height: 12),
+                    
+                    const Text('Фильтр по механику:', style: TextStyle(fontWeight: FontWeight.bold)),
+                    DropdownButtonFormField<String>(
+                      value: _mechanicFilter,
+                      items: [
+                        const DropdownMenuItem(value: null, child: Text('Все механики')),
+                        ...mechanics.map((mechanic) => DropdownMenuItem(
+                          value: mechanic.id.toString(),
+                          child: Text(mechanic.name),
+                        )),
+                      ],
+                      onChanged: (String? newValue) {
+                        setState(() => _mechanicFilter = newValue);
+                        Navigator.of(context).pop();
+                      },
+                      decoration: const InputDecoration(border: OutlineInputBorder()),
+                    ),
                   ],
-                  onChanged: (String? newValue) => setState(() => _statusFilter = newValue),
-                  decoration: const InputDecoration(border: OutlineInputBorder()),
                 ),
-                
-                const SizedBox(height: 12),
-                
-                const Text('Фильтр по механику:', style: TextStyle(fontWeight: FontWeight.bold)),
-                DropdownButtonFormField<String>(
-                  value: _mechanicFilter,
-                  items: [
-                    const DropdownMenuItem(value: null, child: Text('Все механики')),
-                    ...mechanics.map((mechanic) => DropdownMenuItem(
-                      value: mechanic.id.toString(),
-                      child: Text(mechanic.name),
-                    )),
-                  ],
-                  onChanged: (String? newValue) => setState(() => _mechanicFilter = newValue),
-                  decoration: const InputDecoration(border: OutlineInputBorder()),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () {
+                    setState(() {
+                      _sortOrder = 'newest';
+                      _statusFilter = null;
+                      _mechanicFilter = null;
+                    });
+                    Navigator.of(context).pop();
+                  },
+                  child: const Text('Сбросить'),
+                ),
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  child: const Text('Закрыть'),
                 ),
               ],
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () {
-                setState(() {
-                  _sortOrder = 'newest';
-                  _statusFilter = null;
-                  _mechanicFilter = null;
-                });
-                Navigator.of(context).pop();
-              },
-              child: const Text('Сбросить'),
-            ),
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(),
-              child: const Text('Применить'),
-            ),
-          ],
+            );
+          },
         );
       },
     );

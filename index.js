@@ -7,7 +7,7 @@ app.use(cors());
 const prisma = new PrismaClient();
 const PORT = 3000;
 
-app.use(express.json({ limit: '50mb' })); // Увеличиваем лимит для больших фото
+app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // ==================== ЗАЯВИТЕЛИ ====================
@@ -137,12 +137,37 @@ app.put("/requests/:id", async (req, res) => {
     const { id } = req.params;
     const { problem, mechanicId, serviceId, closedAt, status } = req.body;
     
+    console.log('🔄 Обновление заявки:', {
+      id,
+      problem,
+      mechanicId,
+      serviceId,
+      closedAt,
+      status
+    });
+    
     const updateData = {};
+    
     if (problem !== undefined) updateData.problem = problem;
-    if (mechanicId !== undefined) updateData.mechanicId = mechanicId;
-    if (serviceId !== undefined) updateData.serviceId = serviceId;
-    if (closedAt !== undefined) updateData.closedAt = closedAt;
+    if (mechanicId !== undefined) {
+      updateData.mechanicId = mechanicId === null ? null : Number(mechanicId);
+    }
+    if (serviceId !== undefined) {
+      updateData.serviceId = serviceId === null ? null : Number(serviceId);
+    }
+    
+    // Обработка closedAt - преобразуем null в undefined для Prisma
+    if (closedAt !== undefined) {
+      if (closedAt === null) {
+        updateData.closedAt = null;
+      } else if (closedAt) {
+        updateData.closedAt = new Date(closedAt);
+      }
+    }
+    
     if (status !== undefined) updateData.status = status;
+    
+    console.log('📦 Данные для обновления:', updateData);
     
     const request = await prisma.request.update({
       where: { id: Number(id) },
@@ -155,8 +180,90 @@ app.put("/requests/:id", async (req, res) => {
       }
     });
     
+    console.log('✅ Заявка успешно обновлена:', {
+      id: request.id,
+      status: request.status,
+      closedAt: request.closedAt
+    });
+    
     res.json(request);
   } catch (error) {
+    console.error('❌ Ошибка обновления заявки:', error);
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// ==================== ОТКЛОНЕНИЕ ЗАЯВКИ ====================
+app.put("/requests/:id/reject", async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    console.log('❌ Отклонение заявки:', id);
+    
+    const request = await prisma.request.update({
+      where: { id: Number(id) },
+      data: {
+        status: "отклонена",
+        closedAt: new Date()
+      },
+      include: {
+        applicant: true,
+        mechanic: true,
+        transport: true,
+        service: true
+      }
+    });
+    
+    console.log('✅ Заявка отклонена:', {
+      id: request.id,
+      status: request.status,
+      closedAt: request.closedAt
+    });
+    
+    res.json(request);
+  } catch (error) {
+    console.error('❌ Ошибка отклонения заявки:', error);
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// ==================== ОБНОВЛЕНИЕ СТАТУСА ЗАЯВКИ ====================
+app.put("/requests/:id/status", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body;
+    
+    console.log('🔄 Обновление статуса заявки:', { id, status });
+    
+    const updateData = { status };
+    
+    // Автоматически управляем closedAt в зависимости от статуса
+    if (status === 'отклонена') {
+      updateData.closedAt = new Date();
+    } else if (status === 'новая') {
+      updateData.closedAt = null;
+    }
+    
+    const request = await prisma.request.update({
+      where: { id: Number(id) },
+      data: updateData,
+      include: {
+        applicant: true,
+        mechanic: true,
+        transport: true,
+        service: true
+      }
+    });
+    
+    console.log('✅ Статус заявки обновлен:', {
+      id: request.id,
+      status: request.status,
+      closedAt: request.closedAt
+    });
+    
+    res.json(request);
+  } catch (error) {
+    console.error('❌ Ошибка обновления статуса заявки:', error);
     res.status(400).json({ error: error.message });
   }
 });
@@ -675,7 +782,7 @@ app.get("/mechanic/requests/:mechanicId", async (req, res) => {
     const requests = await prisma.request.findMany({
       where: { 
         mechanicId: Number(mechanicId),
-        status: { not: "завершена" } // Не показываем завершенные заявки
+        status: { not: "завершена" }
       },
       include: { 
         applicant: true, 

@@ -892,9 +892,10 @@ class _ApplicantMenuState extends State<ApplicantMenu> {
                       value: 'newest',
                       groupValue: _sortOrder,
                       onChanged: (String? value) {
-                        setDialogState(() {
+                        setState(() {
                           _sortOrder = value!;
                         });
+                        Navigator.of(context).pop();
                       },
                     ),
                     RadioListTile<String>(
@@ -902,9 +903,10 @@ class _ApplicantMenuState extends State<ApplicantMenu> {
                       value: 'oldest',
                       groupValue: _sortOrder,
                       onChanged: (String? value) {
-                        setDialogState(() {
+                        setState(() {
                           _sortOrder = value!;
                         });
+                        Navigator.of(context).pop();
                       },
                     ),
                     
@@ -931,9 +933,10 @@ class _ApplicantMenuState extends State<ApplicantMenu> {
                         }).toList(),
                       ],
                       onChanged: (String? newValue) {
-                        setDialogState(() {
+                        setState(() {
                           _statusFilter = newValue;
                         });
+                        Navigator.of(context).pop();
                       },
                       decoration: const InputDecoration(
                         border: OutlineInputBorder(),
@@ -961,9 +964,10 @@ class _ApplicantMenuState extends State<ApplicantMenu> {
                         }).toList(),
                       ],
                       onChanged: (String? newValue) {
-                        setDialogState(() {
+                        setState(() {
                           _transportFilter = newValue;
                         });
+                        Navigator.of(context).pop();
                       },
                       decoration: const InputDecoration(
                         border: OutlineInputBorder(),
@@ -986,7 +990,7 @@ class _ApplicantMenuState extends State<ApplicantMenu> {
                 ),
                 TextButton(
                   onPressed: () => Navigator.of(context).pop(),
-                  child: const Text('Применить'),
+                  child: const Text('Закрыть'),
                 ),
               ],
             );
