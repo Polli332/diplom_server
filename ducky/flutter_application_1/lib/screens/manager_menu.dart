@@ -1,11 +1,9 @@
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:http/http.dart' as http;
-import 'package:file_picker/file_picker.dart';
-
-// Объявляем базовый URL в начале файла
-const String baseUrl = 'https://jvvrlmfl-3000.euw.devtunnels.ms'; // Замените на ваш публичный URL
 
 class ManagerMenu extends StatefulWidget {
   const ManagerMenu({super.key});
@@ -21,10 +19,11 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
   int? serviceId;
   String? userPhoto;
   String? serviceAddress;
-  List<Request> requests = [];
-  List<Mechanic> mechanics = [];
-  List<Transport> transports = [];
-  List<Applicant> applicants = [];
+  List<dynamic> requests = [];
+  List<dynamic> mechanics = [];
+  List<dynamic> transports = [];
+  List<dynamic> applicants = [];
+  List<dynamic> services = [];
   bool _isAccountPanelOpen = false;
   String _sortOrder = 'newest';
   String? _statusFilter;
@@ -33,6 +32,8 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
   bool _photoLoading = false;
 
   late TabController _tabController;
+  final ImagePicker _picker = ImagePicker();
+  final String _baseUrl = 'http://localhost:3000';
 
   final TextEditingController _nameController = TextEditingController();
   final TextEditingController _emailController = TextEditingController();
@@ -41,8 +42,6 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
   final TextEditingController _mechanicEmailController = TextEditingController();
   final TextEditingController _mechanicPasswordController = TextEditingController();
   String? _selectedMechanicPhotoBase64;
-
-  final List<String> _statusList = ['новая', 'принята', 'в работе', 'отклонена'];
 
   @override
   void initState() {
@@ -63,7 +62,37 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
     super.dispose();
   }
 
-  // УПРОЩЕННЫЙ МЕТОД ЗАГРУЗКИ ФОТО С СЕРВЕРА
+  Future<Map<String, dynamic>> _apiRequest(String endpoint, {String method = 'GET', Map<String, dynamic>? body}) async {
+    final url = Uri.parse('$_baseUrl$endpoint');
+    final headers = {'Content-Type': 'application/json'};
+    
+    http.Response response;
+    
+    switch(method) {
+      case 'GET':
+        response = await http.get(url, headers: headers);
+        break;
+      case 'POST':
+        response = await http.post(url, headers: headers, body: jsonEncode(body));
+        break;
+      case 'PUT':
+        response = await http.put(url, headers: headers, body: jsonEncode(body));
+        break;
+      case 'DELETE':
+        response = await http.delete(url, headers: headers);
+        break;
+      default:
+        throw Exception('Неподдерживаемый метод: $method');
+    }
+    
+    if (response.statusCode >= 200 && response.statusCode < 300) {
+      return jsonDecode(utf8.decode(response.bodyBytes));
+    } else {
+      final error = jsonDecode(utf8.decode(response.bodyBytes));
+      throw Exception(error['error'] ?? 'Ошибка сервера: ${response.statusCode}');
+    }
+  }
+
   Future<void> _loadUserPhoto() async {
     if (userId == null) return;
     
@@ -72,54 +101,18 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
     });
 
     try {
-      // Пробуем загрузить фото напрямую из данных менеджера
-      final managerResponse = await http.get(
-        Uri.parse('$baseUrl/managers/$userId'),
-      );
-
-      if (managerResponse.statusCode == 200) {
-        final managerData = json.decode(managerResponse.body);
+      final userData = await _apiRequest('/users/$userId?role=manager');
+      
+      if (userData['photo'] != null && userData['photo'].isNotEmpty) {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString('user_photo', userData['photo']);
         
-        if (managerData['photo'] != null && managerData['photo'].isNotEmpty) {
-          final String photoBase64 = managerData['photo'];
-          
-          // Сохраняем в SharedPreferences и состояние
-          final prefs = await SharedPreferences.getInstance();
-          await prefs.setString('user_photo', photoBase64);
-          
-          setState(() {
-            userPhoto = photoBase64;
-          });
-          return;
-        }
+        setState(() {
+          userPhoto = userData['photo'];
+        });
       }
-
-      // Если в данных менеджера нет фото, пробуем отдельный эндпоинт
-      final photoResponse = await http.get(
-        Uri.parse('$baseUrl/user-photo/manager/$userId'),
-      );
-
-      if (photoResponse.statusCode == 200) {
-        final photoData = json.decode(photoResponse.body);
-        
-        if (photoData['photo'] != null && photoData['photo'].isNotEmpty) {
-          final String photoBase64 = photoData['photo'];
-          
-          final prefs = await SharedPreferences.getInstance();
-          await prefs.setString('user_photo', photoBase64);
-          
-          setState(() {
-            userPhoto = photoBase64;
-          });
-          return;
-        }
-      }
-
-      // Если фото нет нигде
-      _setDefaultPhoto();
-
     } catch (e) {
-      _setDefaultPhoto();
+      debugPrint('Ошибка загрузки фото менеджера: $e');
     } finally {
       setState(() {
         _photoLoading = false;
@@ -127,14 +120,6 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
     }
   }
 
-  // Метод для установки фото по умолчанию
-  void _setDefaultPhoto() {
-    setState(() {
-      userPhoto = null;
-    });
-  }
-
-  // Метод для построения аватарки
   Widget _buildAvatar(String? photoBase64, double radius) {
     if (_photoLoading) {
       return CircleAvatar(
@@ -152,12 +137,12 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
             backgroundColor: Colors.white,
             backgroundImage: MemoryImage(base64Decode(photoBase64)),
             onBackgroundImageError: (exception, stackTrace) {
-              print('Ошибка загрузки изображения: $exception');
+              debugPrint('Ошибка загрузки изображения: $exception');
             },
           );
         }
       } catch (e) {
-        print('Ошибка декодирования base64 изображения: $e');
+        debugPrint('Ошибка декодирования base64 изображения: $e');
       }
     }
     
@@ -172,16 +157,15 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
     );
   }
 
-  // Обновленный метод для выбора фото
   Future<void> _pickImage() async {
     try {
-      FilePickerResult? result = await FilePicker.platform.pickFiles(
-        type: FileType.image,
-        allowMultiple: false,
+      final XFile? image = await _picker.pickImage(
+        source: ImageSource.gallery,
+        imageQuality: 80,
       );
 
-      if (result != null && result.files.single.bytes != null) {
-        final bytes = result.files.single.bytes!;
+      if (image != null) {
+        final bytes = await File(image.path).readAsBytes();
         final base64Image = base64Encode(bytes);
         
         await _updateManagerPhoto(base64Image);
@@ -191,39 +175,29 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
     }
   }
 
-  // УЛУЧШЕННЫЙ МЕТОД ОБНОВЛЕНИЯ ФОТО
   Future<void> _updateManagerPhoto(String base64Image) async {
     setState(() {
       _photoLoading = true;
     });
 
     try {
-      // Обновляем фото в данных менеджера
-      final response = await http.put(
-        Uri.parse('$baseUrl/managers/$userId'),
-        headers: {'Content-Type': 'application/json'},
-        body: json.encode({
+      final user = await _apiRequest('/users/$userId', 
+        method: 'PUT',
+        body: {
+          'role': 'manager',
           'photo': base64Image,
-        }),
+        }
       );
       
-      if (response.statusCode == 200) {
-        // НЕМЕДЛЕННО обновляем состояние
-        setState(() {
-          userPhoto = base64Image;
-        });
-        
-        // Сохраняем в SharedPreferences
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.setString('user_photo', base64Image);
-        
-        _showSuccess('Фото профиля обновлено');
-        
-        // ПЕРЕЗАГРУЖАЕМ ДАННЫЕ ДЛЯ ПРОВЕРКИ
-        await _loadUserPhoto();
-      } else {
-        _showError('Ошибка сервера: ${response.statusCode}');
-      }
+      setState(() {
+        userPhoto = user['photo'];
+      });
+      
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('user_photo', user['photo']);
+      
+      _showSuccess('Фото профиля обновлено');
+      await _loadUserPhoto();
     } catch (e) {
       _showError('Ошибка обновления фото: $e');
     } finally {
@@ -233,16 +207,15 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
     }
   }
 
-  // ДОБАВЛЕН МЕТОД ДЛЯ ВЫБОРА ФОТО МЕХАНИКА
   Future<void> _pickMechanicImage() async {
     try {
-      FilePickerResult? result = await FilePicker.platform.pickFiles(
-        type: FileType.image,
-        allowMultiple: false,
+      final XFile? image = await _picker.pickImage(
+        source: ImageSource.gallery,
+        imageQuality: 80,
       );
 
-      if (result != null && result.files.single.bytes != null) {
-        final bytes = result.files.single.bytes!;
+      if (image != null) {
+        final bytes = await File(image.path).readAsBytes();
         final base64Image = base64Encode(bytes);
         
         setState(() {
@@ -255,7 +228,6 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
     }
   }
 
-  // УЛУЧШЕННЫЙ МЕТОД ЗАГРУЗКИ ДАННЫХ
   Future<void> _loadUserData() async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -264,55 +236,49 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
         userName = prefs.getString('user_name') ?? 'Менеджер';
         userEmail = prefs.getString('user_email') ?? 'Email не указан';
         
-        _nameController.text = userName!;
-        _emailController.text = userEmail!;
+        _nameController.text = userName ?? '';
+        _emailController.text = userEmail ?? '';
       });
 
       if (userId != null) {
-        // ПЕРВОЕ ДЕЛО - ЗАГРУЖАЕМ ФОТО С СЕРВЕРА
         await _loadUserPhoto();
         await _loadManagerService();
       } else {
         setState(() => _isLoading = false);
       }
     } catch (e) {
-      print('Ошибка загрузки данных пользователя: $e');
+      debugPrint('Ошибка загрузки данных пользователя: $e');
       setState(() => _isLoading = false);
     }
   }
 
   Future<void> _loadManagerService() async {
     try {
-      final response = await http.get(Uri.parse('$baseUrl/managers/$userId'));
+      final userData = await _apiRequest('/users/$userId?role=manager');
       
-      if (response.statusCode == 200) {
-        final managerData = json.decode(response.body);
-        setState(() {
-          serviceId = managerData['serviceId'];
-        });
-        
-        if (serviceId != null) {
-          await _loadServiceDetails();
-        }
-        await _loadAllData();
-      } else {
-        setState(() => _isLoading = false);
+      setState(() {
+        serviceId = userData['serviceId'];
+      });
+      
+      if (serviceId != null) {
+        await _loadServiceDetails();
       }
+      await _loadAllData();
     } catch (e) {
+      debugPrint('Ошибка загрузки сервиса менеджера: $e');
       setState(() => _isLoading = false);
     }
   }
 
   Future<void> _loadServiceDetails() async {
     try {
-      final response = await http.get(Uri.parse('$baseUrl/services/$serviceId'));
-      if (response.statusCode == 200) {
-        final serviceData = json.decode(response.body);
-        setState(() {
-          serviceAddress = serviceData['address'] ?? 'Адрес не указан';
-        });
-      }
+      final serviceData = await _apiRequest('/services/$serviceId/details');
+      
+      setState(() {
+        serviceAddress = serviceData['address'] ?? 'Адрес не указан';
+      });
     } catch (e) {
+      debugPrint('Ошибка загрузки адреса сервиса: $e');
       setState(() {
         serviceAddress = 'Адрес не указан';
       });
@@ -326,91 +292,169 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
         _loadServiceMechanics(),
         _loadTransports(),
         _loadApplicants(),
+        _loadServices(),
       ]);
       setState(() => _isLoading = false);
     } catch (e) {
+      debugPrint('Ошибка загрузки всех данных: $e');
       setState(() => _isLoading = false);
     }
   }
 
   Future<void> _loadServiceRequests() async {
-    try {
-      final response = await http.get(Uri.parse('$baseUrl/requests'));
-      
-      if (response.statusCode == 200) {
-        final List<dynamic> data = json.decode(response.body);
-        List<Request> allRequests = data.map((item) => Request.fromJson(item)).toList();
-        
-        setState(() {
-          requests = allRequests.where((request) => request.serviceId == serviceId).toList();
-        });
-      }
-    } catch (e) {
-      print('Error loading requests: $e');
+  try {
+    final dynamic data = await _apiRequest('/requests');
+    
+    if (data is! List) {
+      debugPrint('Ошибка: данные заявок не являются списком');
+      setState(() {
+        requests = [];
+      });
+      return;
     }
+    
+    final List<dynamic> filteredRequests = [];
+    for (final request in data) {
+      final requestServiceId = request['serviceId'];
+      final parsedServiceId = requestServiceId is int 
+          ? requestServiceId 
+          : int.tryParse(requestServiceId?.toString() ?? '');
+      
+      if (parsedServiceId == serviceId) {
+        filteredRequests.add(request);
+      }
+    }
+    
+    setState(() {
+      requests = filteredRequests;
+    });
+  } catch (e) {
+    debugPrint('Ошибка загрузки заявок: $e');
+    setState(() {
+      requests = [];
+    });
   }
+}
+
+  Future<void> _loadServices() async {
+  try {
+    final dynamic data = await _apiRequest('/services');
+    
+    if (data is List) {
+      setState(() {
+        services = data;
+      });
+    } else {
+      debugPrint('Сервисы пришли не как список');
+      setState(() {
+        services = [];
+      });
+    }
+  } catch (e) {
+    debugPrint('Ошибка загрузки сервисов: $e');
+    setState(() {
+      services = [];
+    });
+  }
+}
 
   Future<void> _loadServiceMechanics() async {
-    try {
-      final response = await http.get(Uri.parse('$baseUrl/mechanics'));
-      if (response.statusCode == 200) {
-        final List<dynamic> data = json.decode(response.body);
-        List<Mechanic> allMechanics = data.map((item) => Mechanic.fromJson(item)).toList();
-        
-        setState(() {
-          mechanics = allMechanics.where((mechanic) => mechanic.serviceId == serviceId).toList();
-        });
-      }
-    } catch (e) {
-      print('Error loading mechanics: $e');
+  try {
+    final dynamic data = await _apiRequest('/mechanics');
+    
+    if (data is! List) {
+      debugPrint('Ошибка: данные механиков не являются списком');
+      setState(() {
+        mechanics = [];
+      });
+      return;
     }
+    
+    final List<dynamic> filteredMechanics = [];
+    for (final mechanic in data) {
+      final mechanicServiceId = mechanic['serviceId'];
+      final parsedServiceId = mechanicServiceId is int 
+          ? mechanicServiceId 
+          : int.tryParse(mechanicServiceId?.toString() ?? '');
+      
+      if (parsedServiceId == serviceId) {
+        filteredMechanics.add(mechanic);
+      }
+    }
+    
+    setState(() {
+      mechanics = filteredMechanics;
+    });
+  } catch (e) {
+    debugPrint('Ошибка загрузки механиков: $e');
+    setState(() {
+      mechanics = [];
+    });
   }
+}
 
   Future<void> _loadTransports() async {
-    try {
-      final response = await http.get(Uri.parse('$baseUrl/transports'));
-      if (response.statusCode == 200) {
-        final List<dynamic> data = json.decode(response.body);
-        setState(() {
-          transports = data.map((item) => Transport.fromJson(item)).toList();
-        });
-      }
-    } catch (e) {
-      print('Error loading transports: $e');
+  try {
+    final dynamic data = await _apiRequest('/transports');
+    
+    if (data is List) {
+      setState(() {
+        transports = data;
+      });
+    } else {
+      debugPrint('Транспорты пришли не как список');
+      setState(() {
+        transports = [];
+      });
     }
+  } catch (e) {
+    debugPrint('Ошибка загрузки транспорта: $e');
+    setState(() {
+      transports = [];
+    });
   }
+}
+
 
   Future<void> _loadApplicants() async {
-    try {
-      final response = await http.get(Uri.parse('$baseUrl/applicants'));
-      if (response.statusCode == 200) {
-        final List<dynamic> data = json.decode(response.body);
-        setState(() {
-          applicants = data.map((item) => Applicant.fromJson(item)).toList();
-        });
-      }
-    } catch (e) {
-      print('Error loading applicants: $e');
+  try {
+    final dynamic data = await _apiRequest('/applicants');
+    
+    if (data is List) {
+      setState(() {
+        applicants = data;
+      });
+    } else {
+      debugPrint('Заявители пришли не как список');
+      setState(() {
+        applicants = [];
+      });
     }
+  } catch (e) {
+    debugPrint('Ошибка загрузки заявителей: $e');
+    setState(() {
+      applicants = [];
+    });
   }
+}
 
-  // ИСПРАВЛЕННЫЙ МЕТОД ПОКАЗА ДЕТАЛЕЙ ЗАЯВКИ
-  void _showRequestDetails(Request request) {
-    final applicant = request.applicant != null 
-        ? Applicant.fromJson(request.applicant!)
-        : applicants.firstWhere(
-            (a) => a.id == request.applicantId,
-            orElse: () => Applicant(id: 0, name: 'Неизвестно', email: 'Неизвестно'),
-          );
+  void _showRequestDetails(Map<String, dynamic> request) {
+    final applicant = applicants.firstWhere(
+      (a) => (a['id'] is int ? a['id'] : int.tryParse(a['id'].toString()) ?? 0) == 
+             (request['applicantId'] is int ? request['applicantId'] : int.tryParse(request['applicantId'].toString()) ?? 0),
+      orElse: () => {'name': 'Неизвестно', 'email': 'Неизвестно'},
+    );
         
-    final transport = request.transport != null
-        ? Transport.fromJson(request.transport!)
-        : transports.firstWhere(
-            (t) => t.id == request.transportId,
-            orElse: () => Transport(id: 0, type: 'Неизвестно', model: 'Неизвестно', serial: 'Неизвестно'),
-          );
+    final transport = transports.firstWhere(
+      (t) => (t['id'] is int ? t['id'] : int.tryParse(t['id'].toString()) ?? 0) == 
+             (request['transportId'] is int ? request['transportId'] : int.tryParse(request['transportId'].toString()) ?? 0),
+      orElse: () => {'type': 'Неизвестно', 'model': 'Неизвестно', 'serial': 'Неизвестно', 'photo': ''},
+    );
 
     final mechanic = _getRequestMechanic(request);
+
+    final status = request['status']?.toString() ?? 'новая';
+    final statusColor = _getStatusColor(status);
 
     showDialog(
       context: context,
@@ -445,29 +489,30 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
                     ),
                   ),
                   const SizedBox(height: 16),
-                  _buildDetailRow('Номер заявки:', '#${request.id}'),
-                  _buildDetailRow('Проблема:', request.problem),
-                  _buildDetailRow('Статус:', request.status),
+                  _buildDetailRow('Номер заявки:', '#${request['id']}'),
+                  _buildDetailRow('Статус:', status),
+                  _buildDetailRow('Проблема:', request['problem']?.toString() ?? ''),
+                  
                   _buildDetailRow('Дата создания:', 
-                    '${request.submittedAt.day}.${request.submittedAt.month}.${request.submittedAt.year} ${request.submittedAt.hour}:${request.submittedAt.minute.toString().padLeft(2, '0')}'),
+                    _formatDateTime(request['submittedAt']?.toString() ?? '')),
                   
                   const SizedBox(height: 12),
                   const Text('Данные заявителя:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                  _buildDetailRow('Имя:', applicant.name),
-                  _buildDetailRow('Email:', applicant.email),
+                  _buildDetailRow('Имя:', applicant['name']?.toString() ?? 'Неизвестно'),
+                  _buildDetailRow('Email:', applicant['email']?.toString() ?? 'Неизвестно'),
                   
                   const SizedBox(height: 12),
                   const Text('Данные транспорта:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                  _buildDetailRow('Тип:', transport.type),
-                  _buildDetailRow('Модель:', transport.model),
-                  _buildDetailRow('Серийный номер:', transport.serial),
+                  _buildDetailRow('Тип:', transport['type']?.toString() ?? 'Неизвестно'),
+                  _buildDetailRow('Модель:', transport['model']?.toString() ?? 'Неизвестно'),
+                  _buildDetailRow('Серийный номер:', transport['serial']?.toString() ?? 'Неизвестно'),
                   
                   const SizedBox(height: 12),
                   const Text('Назначенный механик:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                  _buildDetailRow('Имя:', mechanic?.name ?? 'Не назначен'),
-                  _buildDetailRow('Email:', mechanic?.email ?? 'Не назначен'),
+                  _buildDetailRow('Имя:', mechanic?['name']?.toString() ?? 'Не назначен'),
+                  _buildDetailRow('Email:', mechanic?['email']?.toString() ?? 'Не назначен'),
                   
-                  if (transport.photo != null && transport.photo!.isNotEmpty) ...[
+                  if (transport['photo'] != null && transport['photo'] is String && (transport['photo'] as String).isNotEmpty) ...[
                     const SizedBox(height: 12),
                     const Text(
                       'Фото транспорта:',
@@ -484,7 +529,7 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
                       child: ClipRRect(
                         borderRadius: BorderRadius.circular(12),
                         child: Image.memory(
-                          base64Decode(transport.photo!),
+                          base64Decode(transport['photo'] as String),
                           fit: BoxFit.cover,
                           errorBuilder: (context, error, stackTrace) {
                             return const Center(
@@ -503,14 +548,13 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
                     ),
                   ],
                   
-                  if (request.closedAt != null) ...[
+                  if (request['closedAt'] != null) ...[
                     const SizedBox(height: 12),
                     _buildDetailRow('Дата закрытия:', 
-                      '${request.closedAt!.day}.${request.closedAt!.month}.${request.closedAt!.year}'),
+                      _formatDate(request['closedAt']?.toString() ?? '')),
                   ],
                   
                   const SizedBox(height: 20),
-                  // ИСПРАВЛЕННЫЕ КНОПКИ - ТЕПЕРЬ В КОЛОНКУ ДЛЯ МАЛЕНЬКИХ ЭКРАНОВ
                   Column(
                     children: [
                       SizedBox(
@@ -526,13 +570,13 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
                         ),
                       ),
                       const SizedBox(height: 8),
-                      if (request.status != 'отклонена')
+                      if (status != 'отклонена' && status != 'завершена')
                         SizedBox(
                           width: double.infinity,
                           child: ElevatedButton(
                             onPressed: () {
                               Navigator.of(context).pop();
-                              _showMechanicAssignmentDialog(request);
+                              _showAssignmentDialog(request);
                             },
                             style: ElevatedButton.styleFrom(
                               backgroundColor: Colors.blue,
@@ -542,14 +586,14 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
                             child: const Text('Назначить механика'),
                           ),
                         ),
-                      if (request.status != 'отклонена') ...[
+                      if (status != 'отклонена' && status != 'завершена') ...[
                         const SizedBox(height: 8),
                         SizedBox(
                           width: double.infinity,
                           child: ElevatedButton(
                             onPressed: () {
                               Navigator.of(context).pop();
-                              _showStatusChangeDialog(request);
+                              _showStatusDialog(request);
                             },
                             style: ElevatedButton.styleFrom(
                               backgroundColor: Colors.orange,
@@ -571,8 +615,8 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
     );
   }
 
-  void _showMechanicAssignmentDialog(Request request) {
-    String? selectedMechanicId = request.mechanicId?.toString();
+  void _showAssignmentDialog(Map<String, dynamic> request) {
+    String? selectedMechanicId = request['mechanicId']?.toString();
 
     showDialog(
       context: context,
@@ -586,19 +630,24 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
                 children: [
                   const Text('Выберите механика для этой заявки:'),
                   const SizedBox(height: 16),
-                  DropdownButtonFormField<String>(
-                    value: selectedMechanicId,
+                  DropdownButtonFormField<String?>(
+                    initialValue: selectedMechanicId,
                     items: [
-                      const DropdownMenuItem(
+                      const DropdownMenuItem<String?>(
                         value: null,
                         child: Text('Не назначен'),
                       ),
-                      ...mechanics.map((mechanic) {
-                        return DropdownMenuItem(
-                          value: mechanic.id.toString(),
-                          child: Text('${mechanic.name} (${mechanic.email})'),
-                        );
-                      }).toList(),
+                      ...mechanics.map<DropdownMenuItem<String>>(
+                        (mechanic) {
+                          final mechanicId = mechanic['id'] is int 
+                              ? mechanic['id'].toString() 
+                              : mechanic['id']?.toString() ?? '';
+                          return DropdownMenuItem<String>(
+                            value: mechanicId,
+                            child: Text('${mechanic['name']} (${mechanic['email']})'),
+                          );
+                        },
+                      ),
                     ],
                     onChanged: (String? newValue) {
                       setDialogState(() {
@@ -636,8 +685,8 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
     );
   }
 
-  void _showStatusChangeDialog(Request request) {
-    String selectedStatus = request.status;
+  void _showStatusDialog(Map<String, dynamic> request) {
+    String selectedStatus = request['status']?.toString() ?? 'новая';
 
     showDialog(
       context: context,
@@ -652,16 +701,24 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
                   const Text('Выберите новый статус заявки:'),
                   const SizedBox(height: 16),
                   DropdownButtonFormField<String>(
-                    value: selectedStatus,
-                    items: _statusList.map((String status) {
-                      return DropdownMenuItem(
-                        value: status,
-                        child: Text(status),
+                    initialValue: selectedStatus,
+                    items: [
+                      'новая',
+                      'принята', 
+                      'в работе',
+                      'отклонена',
+                      'завершена'
+                    ].map<DropdownMenuItem<String>>((String value) {
+                      return DropdownMenuItem<String>(
+                        value: value,
+                        child: Text(value),
                       );
                     }).toList(),
                     onChanged: (String? newValue) {
                       setDialogState(() {
-                        selectedStatus = newValue!;
+                        if (newValue != null) {
+                          selectedStatus = newValue;
+                        }
                       });
                     },
                     decoration: const InputDecoration(
@@ -691,85 +748,67 @@ class _ManagerMenuState extends State<ManagerMenu> with SingleTickerProviderStat
     );
   }
 
-  Future<void> _assignMechanicToRequest(Request request, int mechanicId) async {
+  Future<void> _assignMechanicToRequest(Map<String, dynamic> request, int mechanicId) async {
     try {
-      final response = await http.put(
-        Uri.parse('$baseUrl/requests/${request.id}'),
-        headers: {'Content-Type': 'application/json'},
-        body: json.encode({
+      await _apiRequest(
+        '/requests/${request['id']}',
+        method: 'PUT',
+        body: {
           'mechanicId': mechanicId,
-        }),
+          'status': 'в работе',
+        }
       );
 
-      if (response.statusCode == 200) {
-        await _loadServiceRequests();
-        _showSuccess('Механик успешно назначен');
-      } else {
-        _showError('Ошибка назначения механика: ${response.statusCode}');
-      }
+      await _loadServiceRequests();
+      _showSuccess('Механик успешно назначен');
     } catch (e) {
       _showError('Ошибка назначения механика: $e');
     }
   }
 
-  Future<void> _removeMechanicFromRequest(Request request) async {
+  Future<void> _removeMechanicFromRequest(Map<String, dynamic> request) async {
     try {
-      final response = await http.put(
-        Uri.parse('$baseUrl/requests/${request.id}'),
-        headers: {'Content-Type': 'application/json'},
-        body: json.encode({
+      await _apiRequest(
+        '/requests/${request['id']}',
+        method: 'PUT',
+        body: {
           'mechanicId': null,
-        }),
+          'status': 'новая',
+        }
       );
 
-      if (response.statusCode == 200) {
-        await _loadServiceRequests();
-        _showSuccess('Механик удален из заявки');
-      } else {
-        _showError('Ошибка удаления механика: ${response.statusCode}');
-      }
+      await _loadServiceRequests();
+      _showSuccess('Механик удален из заявки');
     } catch (e) {
       _showError('Ошибка удаления механика: $e');
     }
   }
 
-  // ИСПРАВЛЕННЫЙ МЕТОД ОБНОВЛЕНИЯ СТАТУСА ЗАЯВКИ
-  // ИСПРАВЛЕННЫЙ МЕТОД ОБНОВЛЕНИЯ СТАТУСА ЗАЯВКИ
-Future<void> _updateRequestStatus(Request request, String newStatus) async {
-  try {
-    final Map<String, dynamic> updateData = {'status': newStatus};
-    
-    if (newStatus == 'отклонена') {
-      updateData['closedAt'] = DateTime.now().toIso8601String();
-    } else if (newStatus == 'новая') {
-      // Если статус меняется обратно на "новая", убираем дату закрытия
-      updateData['closedAt'] = null;
-    }
+  Future<void> _updateRequestStatus(Map<String, dynamic> request, String newStatus) async {
+    try {
+      final Map<String, dynamic> updateData = {'status': newStatus};
+      
+      if (newStatus == 'отклонена' || newStatus == 'завершена') {
+        updateData['closedAt'] = DateTime.now().toIso8601String();
+      }
 
-    print('Updating request ${request.id} with status: $newStatus');
-    print('Update data: $updateData');
+      await _apiRequest(
+        '/requests/${request['id']}',
+        method: 'PUT',
+        body: updateData
+      );
 
-    final response = await http.put(
-      Uri.parse('$baseUrl/requests/${request.id}'),
-      headers: {'Content-Type': 'application/json'},
-      body: json.encode(updateData),
-    );
-
-    if (response.statusCode == 200) {
       await _loadServiceRequests();
       _showSuccess('Статус заявки обновлен на "$newStatus"');
-    } else {
-      print('Server error: ${response.statusCode}');
-      print('Response body: ${response.body}');
-      _showError('Ошибка обновления статуса: ${response.statusCode}');
+    } catch (e) {
+      debugPrint('Ошибка обновления статуса: $e');
+      _showError('Ошибка обновления статуса: $e');
     }
-  } catch (e) {
-    print('Error updating status: $e');
-    _showError('Ошибка обновления статуса: $e');
   }
-}
 
   void _showAddMechanicDialog() {
+    _clearMechanicForm();
+    
     showDialog(
       context: context,
       builder: (BuildContext context) {
@@ -869,27 +908,32 @@ Future<void> _updateRequestStatus(Request request, String newStatus) async {
 
   Future<void> _createMechanic() async {
     try {
-      final response = await http.post(
-        Uri.parse('$baseUrl/mechanics'),
-        headers: {'Content-Type': 'application/json'},
-        body: json.encode({
-          'name': _mechanicNameController.text.trim(),
-          'email': _mechanicEmailController.text.trim(),
-          'password': _mechanicPasswordController.text.trim(),
-          'photo': _selectedMechanicPhotoBase64,
-          'role': 'mechanic',
-          'serviceId': serviceId,
-        }),
+      final Map<String, dynamic> mechanicData = {
+        'name': _mechanicNameController.text.trim(),
+        'email': _mechanicEmailController.text.trim(),
+        'password': _mechanicPasswordController.text.trim(),
+        'role': 'mechanic',
+      };
+      
+      if (_selectedMechanicPhotoBase64 != null && _selectedMechanicPhotoBase64!.isNotEmpty) {
+        mechanicData['photo'] = _selectedMechanicPhotoBase64!;
+      }
+      
+      if (serviceId != null) {
+        mechanicData['serviceId'] = serviceId;
+      }
+      
+      await _apiRequest(
+        '/mechanics',
+        method: 'POST',
+        body: mechanicData,
       );
       
-      if (response.statusCode == 200) {
-        await _loadServiceMechanics();
-        _clearMechanicForm();
-        _showSuccess('Механик успешно создан');
-      } else {
-        _showError('Ошибка создания механика: ${response.statusCode}');
-      }
+      await _loadServiceMechanics();
+      _clearMechanicForm();
+      _showSuccess('Механик успешно создан');
     } catch (e) {
+      debugPrint('Полная ошибка создания механика: $e');
       _showError('Ошибка создания механика: $e');
     }
   }
@@ -901,18 +945,15 @@ Future<void> _updateRequestStatus(Request request, String newStatus) async {
     _selectedMechanicPhotoBase64 = null;
   }
 
-  Future<void> _deleteMechanic(Mechanic mechanic) async {
+  Future<void> _deleteMechanic(Map<String, dynamic> mechanic) async {
     try {
-      final response = await http.delete(
-        Uri.parse('$baseUrl/mechanics/${mechanic.id}'),
+      await _apiRequest(
+        '/mechanics/${mechanic['id']}',
+        method: 'DELETE',
       );
 
-      if (response.statusCode == 200) {
-        await _loadServiceMechanics();
-        _showSuccess('Механик удален');
-      } else {
-        _showError('Ошибка удаления механика: ${response.statusCode}');
-      }
+      await _loadServiceMechanics();
+      _showSuccess('Механик удален');
     } catch (e) {
       _showError('Ошибка удаления механика: $e');
     }
@@ -939,159 +980,81 @@ Future<void> _updateRequestStatus(Request request, String newStatus) async {
             ),
           ),
         ],
-      ),
+      )
     );
   }
 
-  Mechanic? _getRequestMechanic(Request request) {
-    if (request.mechanicId == null) return null;
+  String _formatDateTime(String dateTimeStr) {
     try {
-      return mechanics.firstWhere((m) => m.id == request.mechanicId);
+      final dateTime = DateTime.parse(dateTimeStr);
+      return '${dateTime.day.toString().padLeft(2, '0')}.${dateTime.month.toString().padLeft(2, '0')}.${dateTime.year} ${dateTime.hour.toString().padLeft(2, '0')}:${dateTime.minute.toString().padLeft(2, '0')}';
+    } catch (e) {
+      return 'Неизвестно';
+    }
+  }
+
+  String _formatDate(String dateStr) {
+    try {
+      final date = DateTime.parse(dateStr);
+      return '${date.day.toString().padLeft(2, '0')}.${date.month.toString().padLeft(2, '0')}.${date.year}';
+    } catch (e) {
+      return 'Неизвестно';
+    }
+  }
+
+  Map<String, dynamic>? _getRequestMechanic(Map<String, dynamic> request) {
+    if (request['mechanicId'] == null) return null;
+    try {
+      return mechanics.firstWhere((m) => 
+        (m['id'] is int ? m['id'] : int.tryParse(m['id'].toString()) ?? 0) == 
+        (request['mechanicId'] is int ? request['mechanicId'] : int.tryParse(request['mechanicId'].toString()) ?? 0)
+      );
     } catch (e) {
       return null;
     }
   }
 
   Color _getStatusColor(String status) {
-    switch (status) {
+    switch (status.toLowerCase()) {
       case 'новая': return Colors.blue;
       case 'принята': return Colors.orange;
       case 'в работе': return Colors.purple;
       case 'отклонена': return Colors.red;
+      case 'завершена': return Colors.green;
       default: return Colors.grey;
     }
   }
 
-  List<Request> _getFilteredAndSortedRequests() {
-    List<Request> filtered = List.from(requests);
+  List<dynamic> _getFilteredAndSortedRequests() {
+    List<dynamic> filtered = List.from(requests);
 
     if (_statusFilter != null) {
-      filtered = filtered.where((request) => request.status == _statusFilter).toList();
+      filtered = filtered.where((request) => request['status'] == _statusFilter).toList();
     }
 
     if (_mechanicFilter != null) {
-      filtered = filtered.where((request) => request.mechanicId?.toString() == _mechanicFilter).toList();
+      filtered = filtered.where((request) => 
+        request['mechanicId']?.toString() == _mechanicFilter
+      ).toList();
     }
 
     filtered.sort((a, b) {
-      if (_sortOrder == 'newest') {
-        return b.submittedAt.compareTo(a.submittedAt);
-      } else {
-        return a.submittedAt.compareTo(b.submittedAt);
+      final aDateStr = a['submittedAt']?.toString() ?? '';
+      final bDateStr = b['submittedAt']?.toString() ?? '';
+      try {
+        final aDate = DateTime.parse(aDateStr);
+        final bDate = DateTime.parse(bDateStr);
+        if (_sortOrder == 'newest') {
+          return bDate.compareTo(aDate);
+        } else {
+          return aDate.compareTo(bDate);
+        }
+      } catch (e) {
+        return 0;
       }
     });
 
     return filtered;
-  }
-
-  // НОВЫЙ ДИЗАЙН КАРТОЧКИ ЗАЯВКИ
-  Widget _buildRequestCard(Request request) {
-    Transport transport;
-    try {
-      transport = request.transport != null
-          ? Transport.fromJson(request.transport!)
-          : transports.firstWhere(
-              (t) => t.id == request.transportId,
-              orElse: () => Transport(id: 0, type: 'Неизвестно', model: 'Неизвестно', serial: 'Неизвестно'),
-            );
-    } catch (e) {
-      transport = Transport(id: 0, type: 'Неизвестно', model: 'Неизвестно', serial: 'Неизвестно');
-    }
-
-    final statusColor = _getStatusColor(request.status);
-
-    return Card(
-      margin: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
-      elevation: 3,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: InkWell(
-        onTap: () => _showRequestDetails(request),
-        borderRadius: BorderRadius.circular(12),
-        child: Container(
-          padding: const EdgeInsets.all(16),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // Фото транспорта
-              Container(
-                width: 80,
-                height: 80,
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: Colors.grey.shade300),
-                ),
-                child: transport.photo != null && transport.photo!.isNotEmpty
-                    ? ClipRRect(
-                        borderRadius: BorderRadius.circular(8),
-                        child: Image.memory(
-                          base64Decode(transport.photo!),
-                          fit: BoxFit.cover,
-                          errorBuilder: (context, error, stackTrace) {
-                            return const Center(
-                              child: Icon(Icons.error, color: Colors.red),
-                            );
-                          },
-                        ),
-                      )
-                    : const Center(
-                        child: Icon(Icons.directions_bus, size: 40, color: Colors.grey),
-                      ),
-              ),
-              const SizedBox(width: 16),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    // Название транспорта
-                    Text(
-                      transport.model,
-                      style: const TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.blue,
-                      ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    const SizedBox(height: 8),
-                    // Описание проблемы
-                    Text(
-                      request.problem,
-                      style: const TextStyle(
-                        fontSize: 14,
-                        color: Colors.black87,
-                      ),
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    const SizedBox(height: 8),
-                    // Статус заявки
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                      decoration: BoxDecoration(
-                        color: statusColor.withOpacity(0.1),
-                        borderRadius: BorderRadius.circular(16),
-                        border: Border.all(color: statusColor),
-                      ),
-                      child: Text(
-                        request.status.toUpperCase(),
-                        style: TextStyle(
-                          color: statusColor,
-                          fontSize: 12,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
   }
 
   void _showSortFilterDialog() {
@@ -1107,27 +1070,36 @@ Future<void> _updateRequestStatus(Request request, String newStatus) async {
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     const Text('Сортировка по дате:', style: TextStyle(fontWeight: FontWeight.bold)),
-                    RadioListTile<String>(
-                      title: const Text('Сначала новые'),
-                      value: 'newest',
-                      groupValue: _sortOrder,
-                      onChanged: (String? value) {
-                        setState(() {
-                          _sortOrder = value!;
-                        });
-                        Navigator.of(context).pop();
-                      },
-                    ),
-                    RadioListTile<String>(
-                      title: const Text('Сначала старые'),
-                      value: 'oldest',
-                      groupValue: _sortOrder,
-                      onChanged: (String? value) {
-                        setState(() {
-                          _sortOrder = value!;
-                        });
-                        Navigator.of(context).pop();
-                      },
+                    const SizedBox(height: 8),
+                    
+                    Column(
+                      children: [
+                        Radio<String>(
+                          value: 'newest',
+                          groupValue: _sortOrder,
+                          onChanged: (String? value) {
+                            if (value != null) {
+                              setState(() {
+                                _sortOrder = value;
+                              });
+                            }
+                          },
+                        ),
+                        const Text('Сначала новые'),
+                        const SizedBox(height: 8),
+                        Radio<String>(
+                          value: 'oldest',
+                          groupValue: _sortOrder,
+                          onChanged: (String? value) {
+                            if (value != null) {
+                              setState(() {
+                                _sortOrder = value;
+                              });
+                            }
+                          },
+                        ),
+                        const Text('Сначала старые'),
+                      ],
                     ),
                     
                     const SizedBox(height: 16),
@@ -1135,35 +1107,48 @@ Future<void> _updateRequestStatus(Request request, String newStatus) async {
                     const SizedBox(height: 8),
                     
                     const Text('Фильтр по статусу:', style: TextStyle(fontWeight: FontWeight.bold)),
-                    DropdownButtonFormField<String>(
-                      value: _statusFilter,
+                    DropdownButtonFormField<String?>(
+                      initialValue: _statusFilter,
                       items: [
-                        const DropdownMenuItem(value: null, child: Text('Все статусы')),
-                        ..._statusList.map((status) => DropdownMenuItem(value: status, child: Text(status))),
+                        const DropdownMenuItem<String?>(
+                          value: null,
+                          child: Text('Все статусы'),
+                        ),
+                        ...['новая', 'принята', 'в работе', 'отклонена', 'завершена']
+                            .map<DropdownMenuItem<String>>((String value) {
+                          return DropdownMenuItem<String>(
+                            value: value,
+                            child: Text(value),
+                          );
+                        }),
                       ],
-                      onChanged: (String? newValue) {
-                        setState(() => _statusFilter = newValue);
-                        Navigator.of(context).pop();
-                      },
+                      onChanged: (String? newValue) => setState(() => _statusFilter = newValue),
                       decoration: const InputDecoration(border: OutlineInputBorder()),
                     ),
                     
                     const SizedBox(height: 12),
                     
                     const Text('Фильтр по механику:', style: TextStyle(fontWeight: FontWeight.bold)),
-                    DropdownButtonFormField<String>(
-                      value: _mechanicFilter,
+                    DropdownButtonFormField<String?>(
+                      initialValue: _mechanicFilter,
                       items: [
-                        const DropdownMenuItem(value: null, child: Text('Все механики')),
-                        ...mechanics.map((mechanic) => DropdownMenuItem(
-                          value: mechanic.id.toString(),
-                          child: Text(mechanic.name),
-                        )),
+                        const DropdownMenuItem<String?>(
+                          value: null,
+                          child: Text('Все механики'),
+                        ),
+                        ...mechanics.map<DropdownMenuItem<String>>(
+                          (mechanic) {
+                            final mechanicId = mechanic['id'] is int 
+                                ? mechanic['id'].toString() 
+                                : mechanic['id']?.toString() ?? '';
+                            return DropdownMenuItem<String>(
+                              value: mechanicId,
+                              child: Text(mechanic['name']?.toString() ?? 'Без имени'),
+                            );
+                          },
+                        ),
                       ],
-                      onChanged: (String? newValue) {
-                        setState(() => _mechanicFilter = newValue);
-                        Navigator.of(context).pop();
-                      },
+                      onChanged: (String? newValue) => setState(() => _mechanicFilter = newValue),
                       decoration: const InputDecoration(border: OutlineInputBorder()),
                     ),
                   ],
@@ -1203,33 +1188,30 @@ Future<void> _updateRequestStatus(Request request, String newStatus) async {
       final Map<String, dynamic> updateData = {
         'name': _nameController.text.trim(),
         'email': _emailController.text.trim(),
+        'role': 'manager',
       };
 
       if (_passwordController.text.trim().isNotEmpty) {
         updateData['password'] = _passwordController.text.trim();
       }
 
-      final response = await http.put(
-        Uri.parse('$baseUrl/managers/$userId'),
-        headers: {'Content-Type': 'application/json'},
-        body: json.encode(updateData),
+      final user = await _apiRequest(
+        '/users/$userId',
+        method: 'PUT',
+        body: updateData,
       );
+      
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('user_name', user['name']);
+      await prefs.setString('user_email', user['email']);
+      
+      setState(() {
+        userName = user['name'];
+        userEmail = user['email'];
+        _passwordController.clear();
+      });
 
-      if (response.statusCode == 200) {
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.setString('user_name', _nameController.text.trim());
-        await prefs.setString('user_email', _emailController.text.trim());
-        
-        setState(() {
-          userName = _nameController.text.trim();
-          userEmail = _emailController.text.trim();
-          _passwordController.clear();
-        });
-
-        _showSuccess('Профиль успешно обновлен');
-      } else {
-        _showError('Ошибка обновления профиля: ${response.statusCode}');
-      }
+      _showSuccess('Профиль успешно обновлен');
     } catch (e) {
       _showError('Ошибка обновления профиля: $e');
     }
@@ -1261,7 +1243,6 @@ Future<void> _updateRequestStatus(Request request, String newStatus) async {
     }
   }
 
-  // Обновленный метод построения панели профиля
   Widget _buildProfilePanel() {
     return Material(
       color: Colors.transparent,
@@ -1279,9 +1260,8 @@ Future<void> _updateRequestStatus(Request request, String newStatus) async {
         ),
         child: Column(
           children: [
-            // Шапка профиля
             Container(
-              height: 200,
+              height: 150,
               decoration: BoxDecoration(
                 color: Colors.blue[700],
               ),
@@ -1303,9 +1283,9 @@ Future<void> _updateRequestStatus(Request request, String newStatus) async {
                                   width: 36,
                                   height: 36,
                                   decoration: BoxDecoration(
-                                    color: Colors.blue,
+                                    color: Colors.blue[700],
                                     shape: BoxShape.circle,
-                                    border: Border.all(color: Colors.white, width: 2),
+                                    border: Border.all(color: Colors.white, width: 2.0),
                                   ),
                                   child: const Icon(Icons.camera_alt, size: 16, color: Colors.white),
                                 ),
@@ -1313,26 +1293,9 @@ Future<void> _updateRequestStatus(Request request, String newStatus) async {
                             ],
                           ),
                         ),
-                        const SizedBox(height: 16),
-                        Text(
-                          userName ?? 'Менеджер',
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 20,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        Text(
-                          userEmail ?? 'Email не указан',
-                          style: const TextStyle(
-                            color: Colors.white70,
-                            fontSize: 14,
-                          ),
-                        ),
                       ],
                     ),
                   ),
-                  // Кнопка закрытия в левом углу
                   Positioned(
                     top: 16,
                     left: 16,
@@ -1341,7 +1304,6 @@ Future<void> _updateRequestStatus(Request request, String newStatus) async {
                       onPressed: () => setState(() => _isAccountPanelOpen = false),
                     ),
                   ),
-                  // Кнопка выхода в правом углу
                   Positioned(
                     top: 16,
                     right: 16,
@@ -1354,33 +1316,31 @@ Future<void> _updateRequestStatus(Request request, String newStatus) async {
                 ],
               ),
             ),
-            // Контент профиля
             Expanded(
               child: SingleChildScrollView(
                 padding: const EdgeInsets.all(20.0),
                 child: Column(
                   children: [
-                    // Информация о сервисе
                     Container(
                       padding: const EdgeInsets.all(12),
                       decoration: BoxDecoration(
-                        color: Colors.blue[50],
+                        color: const Color(0xFFE3F2FD),
                         borderRadius: BorderRadius.circular(12),
                       ),
                       child: Row(
                         children: [
-                          Icon(Icons.business, color: Colors.blue[700]),
+                          const Icon(Icons.business, color: Color(0xFF1976D2)),
                           const SizedBox(width: 12),
                           Expanded(
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Text(
+                                const Text(
                                   'Адрес сервиса',
                                   style: TextStyle(
                                     fontSize: 16,
                                     fontWeight: FontWeight.bold,
-                                    color: Colors.blue[700],
+                                    color: Color(0xFF1976D2),
                                   ),
                                 ),
                                 Text(
@@ -1394,45 +1354,43 @@ Future<void> _updateRequestStatus(Request request, String newStatus) async {
                       ),
                     ),
                     const SizedBox(height: 30),
-                    // Форма редактирования
                     TextField(
-                      controller: _nameController, 
+                      controller: _nameController,
                       decoration: const InputDecoration(
                         labelText: 'Имя',
                         prefixIcon: Icon(Icons.person),
                         border: OutlineInputBorder(),
-                      )
+                      ),
                     ),
                     const SizedBox(height: 16),
                     TextField(
-                      controller: _emailController, 
+                      controller: _emailController,
                       decoration: const InputDecoration(
                         labelText: 'Email',
                         prefixIcon: Icon(Icons.email),
                         border: OutlineInputBorder(),
-                      )
+                      ),
                     ),
                     const SizedBox(height: 16),
                     TextField(
-                      controller: _passwordController, 
+                      controller: _passwordController,
                       decoration: const InputDecoration(
                         labelText: 'Новый пароль (оставьте пустым, если не хотите менять)',
                         prefixIcon: Icon(Icons.lock),
                         border: OutlineInputBorder(),
-                      ), 
-                      obscureText: true
+                      ),
+                      obscureText: true,
                     ),
                     const SizedBox(height: 30),
-                    // Кнопка сохранить изменения (белая без иконки)
                     SizedBox(
-                      width: double.infinity, 
-                      height: 50, 
+                      width: double.infinity,
+                      height: 50,
                       child: ElevatedButton(
-                        onPressed: _updateProfile, 
+                        onPressed: _updateProfile,
                         style: ElevatedButton.styleFrom(
                           backgroundColor: Colors.white,
-                          foregroundColor: Colors.blue[700],
-                          side: BorderSide(color: Colors.blue[700]!),
+                          foregroundColor: const Color(0xFF1976D2),
+                          side: const BorderSide(color: Color(0xFF1976D2)),
                           elevation: 2,
                         ),
                         child: const Text(
@@ -1442,7 +1400,7 @@ Future<void> _updateRequestStatus(Request request, String newStatus) async {
                             fontWeight: FontWeight.w600,
                           ),
                         ),
-                      )
+                      ),
                     ),
                   ],
                 ),
@@ -1460,7 +1418,6 @@ Future<void> _updateRequestStatus(Request request, String newStatus) async {
 
     return Stack(
       children: [
-        // Основной контент
         Scaffold(
           appBar: AppBar(
             title: const Text('Панель менеджера'),
@@ -1506,7 +1463,6 @@ Future<void> _updateRequestStatus(Request request, String newStatus) async {
                             return _buildRequestCard(request);
                           },
                         ),
-              // Вкладка механиков
               _isLoading
                   ? const Center(child: CircularProgressIndicator())
                   : Column(
@@ -1530,9 +1486,9 @@ Future<void> _updateRequestStatus(Request request, String newStatus) async {
                                       margin: const EdgeInsets.symmetric(
                                           vertical: 4, horizontal: 8),
                                       child: ListTile(
-                                        leading: _buildAvatar(mechanic.photo, 20),
-                                        title: Text(mechanic.name),
-                                        subtitle: Text(mechanic.email),
+                                        leading: _buildAvatar(mechanic['photo'], 20),
+                                        title: Text(mechanic['name']?.toString() ?? ''),
+                                        subtitle: Text(mechanic['email']?.toString() ?? ''),
                                         trailing: IconButton(
                                           icon: const Icon(Icons.delete,
                                               color: Colors.red),
@@ -1550,13 +1506,11 @@ Future<void> _updateRequestStatus(Request request, String newStatus) async {
           ),
         ),
 
-        // затемнение фона
         if (_isAccountPanelOpen)
           Container(
-            color: Colors.black54,
+            color: const Color.fromARGB(137, 0, 0, 0),
           ),
 
-        // панель профиля
         if (_isAccountPanelOpen)
           Positioned(
             right: 0,
@@ -1567,120 +1521,119 @@ Future<void> _updateRequestStatus(Request request, String newStatus) async {
       ],
     );
   }
-}
 
-// Модели данных
-class Request {
-  final int id;
-  final String problem;
-  final DateTime submittedAt;
-  final DateTime? closedAt;
-  final int transportId;
-  final int applicantId;
-  final int? mechanicId;
-  final int? serviceId;
-  final String status;
-  final Map<String, dynamic>? applicant;
-  final Map<String, dynamic>? transport;
-  final Map<String, dynamic>? mechanic;
-
-  Request({
-    required this.id,
-    required this.problem,
-    required this.submittedAt,
-    this.closedAt,
-    required this.transportId,
-    required this.applicantId,
-    this.mechanicId,
-    this.serviceId,
-    required this.status,
-    this.applicant,
-    this.transport,
-    this.mechanic,
-  });
-
-  factory Request.fromJson(Map<String, dynamic> json) {
-    return Request(
-      id: json['id'] ?? 0,
-      problem: json['problem'] ?? 'Описание не указано',
-      submittedAt: DateTime.parse(json['submittedAt'] ?? DateTime.now().toIso8601String()),
-      closedAt: json['closedAt'] != null ? DateTime.parse(json['closedAt']) : null,
-      transportId: json['transportId'] ?? 0,
-      applicantId: json['applicantId'] ?? 0,
-      mechanicId: json['mechanicId'],
-      serviceId: json['serviceId'],
-      status: json['status'] ?? 'новая',
-      applicant: json['applicant'] is Map ? Map<String, dynamic>.from(json['applicant']) : null,
-      transport: json['transport'] is Map ? Map<String, dynamic>.from(json['transport']) : null,
-      mechanic: json['mechanic'] is Map ? Map<String, dynamic>.from(json['mechanic']) : null,
+  Widget _buildRequestCard(Map<String, dynamic> request) {
+    final transport = transports.firstWhere(
+      (t) => (t['id'] is int ? t['id'] : int.tryParse(t['id'].toString()) ?? 0) == 
+             (request['transportId'] is int ? request['transportId'] : int.tryParse(request['transportId'].toString()) ?? 0),
+      orElse: () => {'type': 'Неизвестно', 'model': 'Неизвестно', 'serial': 'Неизвестно', 'photo': ''},
     );
-  }
-}
 
-class Mechanic {
-  final int id;
-  final String name;
-  final String email;
-  final String? photo;
-  final int serviceId;
+    final status = request['status']?.toString() ?? 'новая';
+    final statusColor = _getStatusColor(status);
 
-  Mechanic({
-    required this.id,
-    required this.name,
-    required this.email,
-    required this.serviceId,
-    this.photo,
-  });
-
-  factory Mechanic.fromJson(Map<String, dynamic> json) {
-    return Mechanic(
-      id: json['id'] ?? 0,
-      name: json['name'] ?? 'Неизвестно',
-      email: json['email'] ?? 'Неизвестно',
-      serviceId: json['serviceId'] ?? 0,
-      photo: json['photo'],
-    );
-  }
-}
-
-class Applicant {
-  final int id;
-  final String name;
-  final String email;
-
-  Applicant({required this.id, required this.name, required this.email});
-
-  factory Applicant.fromJson(Map<String, dynamic> json) {
-    return Applicant(
-      id: json['id'] ?? 0,
-      name: json['name'] ?? 'Неизвестно',
-      email: json['email'] ?? 'Неизвестно',
-    );
-  }
-}
-
-class Transport {
-  final int id;
-  final String type;
-  final String serial;
-  final String? photo;
-  final String model;
-
-  Transport({
-    required this.id,
-    required this.type,
-    required this.serial,
-    required this.model,
-    this.photo,
-  });
-
-  factory Transport.fromJson(Map<String, dynamic> json) {
-    return Transport(
-      id: json['id'] ?? 0,
-      type: json['type'] ?? 'Неизвестно',
-      serial: json['serial'] ?? 'Неизвестно',
-      model: json['model'] ?? 'Неизвестно',
-      photo: json['photo'],
+    return Card(
+      margin: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
+      elevation: 3,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: InkWell(
+        onTap: () => _showRequestDetails(request),
+        borderRadius: BorderRadius.circular(12),
+        child: Container(
+          padding: const EdgeInsets.all(16),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                width: 80,
+                height: 80,
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.grey.shade300),
+                ),
+                child: (transport['photo'] != null && transport['photo'] is String && (transport['photo'] as String).isNotEmpty)
+                    ? ClipRRect(
+                        borderRadius: BorderRadius.circular(8),
+                        child: Image.memory(
+                          base64Decode(transport['photo'] as String),
+                          fit: BoxFit.cover,
+                          errorBuilder: (context, error, stackTrace) {
+                            debugPrint('Ошибка загрузки фото транспорта: $error');
+                            return const Center(
+                              child: Icon(Icons.directions_bus, size: 40, color: Colors.grey),
+                            );
+                          },
+                        ),
+                      )
+                    : const Center(
+                        child: Icon(Icons.directions_bus, size: 40, color: Colors.grey),
+                      ),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      transport['model']?.toString() ?? 'Неизвестно',
+                      style: const TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.blue,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      request['problem']?.toString() ?? '',
+                      style: const TextStyle(
+                        fontSize: 14,
+                        color: Colors.black87,
+                      ),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 8),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: statusColor.withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(color: statusColor),
+                      ),
+                      child: Text(
+                        status.toUpperCase(),
+                        style: TextStyle(
+                          color: statusColor,
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        Icon(Icons.calendar_today, size: 14, color: Colors.grey.shade600),
+                        const SizedBox(width: 4),
+                        Text(
+                          _formatDateTime(request['submittedAt']?.toString() ?? ''),
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: Colors.grey.shade600,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

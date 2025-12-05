@@ -10,38 +10,283 @@ const PORT = 3000;
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
+// ==================== ЛОГИРОВАНИЕ ====================
+const logger = {
+  info: (message, data = {}) => {
+    const timestamp = new Date().toISOString();
+    console.log(`[${timestamp}] ℹ️ INFO: ${message}`, Object.keys(data).length ? data : '');
+  },
+  
+  error: (message, error = {}) => {
+    const timestamp = new Date().toISOString();
+    console.error(`[${timestamp}] ❌ ERROR: ${message}`, error.message ? error : '');
+  },
+  
+  warn: (message, data = {}) => {
+    const timestamp = new Date().toISOString();
+    console.warn(`[${timestamp}] ⚠️ WARN: ${message}`, Object.keys(data).length ? data : '');
+  },
+  
+  debug: (message, data = {}) => {
+    const timestamp = new Date().toISOString();
+    console.debug(`[${timestamp}] 🔍 DEBUG: ${message}`, Object.keys(data).length ? data : '');
+  },
+  
+  success: (message, data = {}) => {
+    const timestamp = new Date().toISOString();
+    console.log(`[${timestamp}] ✅ SUCCESS: ${message}`, Object.keys(data).length ? data : '');
+  },
+  
+  request: (method, url, ip, userAgent) => {
+    const timestamp = new Date().toISOString();
+    console.log(`[${timestamp}] 📞 REQUEST: ${method} ${url} from ${ip} (${userAgent})`);
+  },
+  
+  response: (method, url, statusCode, responseTime) => {
+    const timestamp = new Date().toISOString();
+    const statusEmoji = statusCode >= 200 && statusCode < 300 ? '✅' : 
+                       statusCode >= 400 && statusCode < 500 ? '⚠️' : '❌';
+    console.log(`[${timestamp}] ${statusEmoji} RESPONSE: ${method} ${url} - ${statusCode} (${responseTime}ms)`);
+  }
+};
+
+// Middleware для логирования всех запросов
+app.use((req, res, next) => {
+  const startTime = Date.now();
+  const ip = req.ip || req.connection.remoteAddress;
+  const userAgent = req.get('User-Agent') || 'Unknown';
+  
+  logger.request(req.method, req.url, ip, userAgent);
+  
+  // Логируем тело запроса для POST/PUT запросов (кроме паролей)
+  if (['POST', 'PUT'].includes(req.method) && req.body) {
+    const logBody = { ...req.body };
+    
+    // Скрываем пароли в логах
+    if (logBody.password) {
+      logBody.password = '***HIDDEN***';
+    }
+    
+    logger.debug(`Request body:`, logBody);
+  }
+  
+  // Перехватываем отправку ответа для логирования
+  const originalSend = res.send;
+  res.send = function(body) {
+    const responseTime = Date.now() - startTime;
+    logger.response(req.method, req.url, res.statusCode, responseTime);
+    
+    // Логируем тело ответа для ошибок
+    if (res.statusCode >= 400 && typeof body === 'string') {
+      try {
+        const parsedBody = JSON.parse(body);
+        logger.debug(`Error response:`, parsedBody);
+      } catch (e) {
+        logger.debug(`Error response (raw): ${body.substring(0, 200)}...`);
+      }
+    }
+    
+    return originalSend.call(this, body);
+  };
+  
+  next();
+});
+
+// ==================== АВТОРИЗАЦИЯ ====================
+app.post("/auth/login", async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    
+    logger.info('Попытка входа', { email });
+    
+    let user = null;
+    let role = null;
+    
+    // 1. Поиск в заявителях
+    logger.debug('Поиск пользователя в таблице заявителей');
+    user = await prisma.applicant.findFirst({
+      where: { 
+        email: email,
+        password: password 
+      }
+    });
+    if (user) {
+      role = 'applicant';
+      logger.debug('Пользователь найден как заявитель', { id: user.id });
+    }
+    
+    // 2. Поиск в механиках
+    if (!user) {
+      logger.debug('Поиск пользователя в таблице механиков');
+      user = await prisma.mechanic.findFirst({
+        where: { 
+          email: email,
+          password: password 
+        }
+      });
+      if (user) {
+        role = 'mechanic';
+        logger.debug('Пользователь найден как механик', { id: user.id });
+      }
+    }
+    
+    // 3. Поиск в менеджерах
+    if (!user) {
+      logger.debug('Поиск пользователя в таблице менеджеров');
+      user = await prisma.manager.findFirst({
+        where: { 
+          email: email,
+          password: password 
+        }
+      });
+      if (user) {
+        role = 'manager';
+        logger.debug('Пользователь найден как менеджер', { id: user.id });
+      }
+    }
+    
+    if (!user) {
+      logger.warn('Неудачная попытка входа', { email, reason: 'Неверный email или пароль' });
+      return res.status(401).json({ error: 'Неверный email или пароль' });
+    }
+    
+    logger.success('Успешный вход', { id: user.id, name: user.name, role });
+    
+    res.json({
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      photo: user.photo,
+      role: role,
+      serviceId: user.serviceId
+    });
+    
+  } catch (error) {
+    logger.error('Ошибка входа', error);
+    res.status(400).json({ error: error.message });
+  }
+});
+
+app.post("/auth/register", async (req, res) => {
+  try {
+    const { name, email, password, role } = req.body;
+    
+    logger.info('Регистрация пользователя', { name, email, role });
+    
+    logger.debug('Проверка существующего пользователя');
+    const existingUser = await prisma.applicant.findFirst({
+      where: { email: email }
+    });
+    
+    if (existingUser) {
+      logger.warn('Попытка регистрации существующего email', { email });
+      return res.status(400).json({ error: 'Пользователь с таким email уже существует' });
+    }
+    
+    logger.debug('Создание нового заявителя');
+    const applicant = await prisma.applicant.create({
+      data: { 
+        name, 
+        email, 
+        password,
+        role: role || 'applicant',
+        photo: null
+      },
+    });
+    
+    logger.success('Успешная регистрация', { id: applicant.id, name: applicant.name });
+    
+    res.json({
+      id: applicant.id,
+      name: applicant.name,
+      email: applicant.email,
+      photo: applicant.photo,
+      role: 'applicant',
+      serviceId: null
+    });
+    
+  } catch (error) {
+    logger.error('Ошибка регистрации', error);
+    res.status(400).json({ error: error.message });
+  }
+});
+
 // ==================== ЗАЯВИТЕЛИ ====================
 app.get("/applicants", async (req, res) => {
-  const applicants = await prisma.applicant.findMany({ include: { requests: true } });
-  res.json(applicants);
+  try {
+    logger.info('Получение списка заявителей');
+    
+    const applicants = await prisma.applicant.findMany({ 
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        photo: true,
+        role: true
+      }
+    });
+    
+    logger.success('Список заявителей получен', { count: applicants.length });
+    res.json(applicants);
+  } catch (error) {
+    logger.error('Ошибка получения списка заявителей', error);
+    res.status(400).json({ error: error.message });
+  }
 });
 
 app.get("/applicants/:id", async (req, res) => {
-  const { id } = req.params;
-  const applicant = await prisma.applicant.findUnique({
-    where: { id: Number(id) },
-    include: { requests: true },
-  });
-  res.json(applicant);
+  try {
+    const { id } = req.params;
+    logger.info('Получение данных заявителя', { id });
+    
+    const applicant = await prisma.applicant.findUnique({
+      where: { id: parseInt(id) },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        photo: true,
+        role: true
+      }
+    });
+    
+    if (applicant) {
+      logger.success('Данные заявителя получены', { id: applicant.id, name: applicant.name });
+      res.json(applicant);
+    } else {
+      logger.warn('Заявитель не найден', { id });
+      res.status(404).json({ error: 'Заявитель не найден' });
+    }
+  } catch (error) {
+    logger.error('Ошибка получения данных заявителя', error);
+    res.status(400).json({ error: error.message });
+  }
 });
 
 app.post("/applicants", async (req, res) => {
   try {
     const { name, role, photo, password, email } = req.body;
+    
+    logger.info('Создание нового заявителя', { name, email });
+    
     const applicant = await prisma.applicant.create({
       data: { name, role, photo, password, email },
     });
+    
+    logger.success('Заявитель создан', { id: applicant.id });
     res.json(applicant);
   } catch (error) {
+    logger.error('Ошибка создания заявителя', error);
     res.status(400).json({ error: error.message });
   }
 });
 
-// ==================== ОБНОВЛЕНИЕ ЗАЯВИТЕЛЯ ====================
 app.put("/applicants/:id", async (req, res) => {
   try {
     const { id } = req.params;
     const { name, email, photo, password } = req.body;
+    
+    logger.info('Обновление данных заявителя', { id, name, email });
     
     const updateData = { name, email };
     
@@ -54,12 +299,21 @@ app.put("/applicants/:id", async (req, res) => {
     }
     
     const applicant = await prisma.applicant.update({
-      where: { id: Number(id) },
+      where: { id: parseInt(id) },
       data: updateData,
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        photo: true,
+        role: true
+      }
     });
     
+    logger.success('Данные заявителя обновлены', { id: applicant.id });
     res.json(applicant);
   } catch (error) {
+    logger.error('Ошибка обновления данных заявителя', error);
     res.status(400).json({ error: error.message });
   }
 });
@@ -67,79 +321,169 @@ app.put("/applicants/:id", async (req, res) => {
 // ==================== ЗАЯВКИ ====================
 app.get("/requests", async (req, res) => {
   try {
+    logger.info('Получение списка заявок');
+    
     const requests = await prisma.request.findMany({
       include: { 
-        applicant: true, 
-        mechanic: true, 
+        applicant: {
+          select: {
+            id: true,
+            name: true,
+            email: true
+          }
+        }, 
+        mechanic: {
+          select: {
+            id: true,
+            name: true,
+            email: true
+          }
+        }, 
         transport: true, 
-        service: true 
+        service: {
+          select: {
+            id: true,
+            address: true,
+            workTime: true
+          }
+        } 
       },
+      orderBy: { submittedAt: 'desc' }
     });
-    console.log(`Returning ${requests.length} requests`);
+    
+    logger.success('Список заявок получен', { count: requests.length });
     res.json(requests);
   } catch (error) {
-    console.error('Error fetching requests:', error);
+    logger.error('Ошибка получения списка заявок', error);
     res.status(400).json({ error: error.message });
   }
 });
 
 app.get("/requests/:id", async (req, res) => {
-  const { id } = req.params;
-  const request = await prisma.request.findUnique({
-    where: { id: Number(id) },
-    include: { 
-      applicant: true, 
-      mechanic: true, 
-      transport: true, 
-      service: true 
-    },
-  });
-  res.json(request);
+  try {
+    const { id } = req.params;
+    logger.info('Получение данных заявки', { id });
+    
+    const request = await prisma.request.findUnique({
+      where: { id: parseInt(id) },
+      include: { 
+        applicant: {
+          select: {
+            id: true,
+            name: true,
+            email: true
+          }
+        }, 
+        mechanic: {
+          select: {
+            id: true,
+            name: true,
+            email: true
+          }
+        }, 
+        transport: true, 
+        service: {
+          select: {
+            id: true,
+            address: true,
+            workTime: true
+          }
+        } 
+      },
+    });
+    
+    if (request) {
+      logger.success('Данные заявки получены', { 
+        id: request.id, 
+        status: request.status,
+        applicantId: request.applicantId 
+      });
+      res.json(request);
+    } else {
+      logger.warn('Заявка не найдена', { id });
+      res.status(404).json({ error: 'Заявка не найдена' });
+    }
+  } catch (error) {
+    logger.error('Ошибка получения данных заявки', error);
+    res.status(400).json({ error: error.message });
+  }
 });
 
 app.post("/requests", async (req, res) => {
   try {
     const { problem, transportId, applicantId, mechanicId, serviceId, closedAt, status } = req.body;
     
-    console.log('Creating request with data:', {
-      problem,
+    logger.info('Создание новой заявки', {
+      problem: problem?.substring(0, 50) + (problem?.length > 50 ? '...' : ''),
       transportId,
       applicantId,
       mechanicId,
       serviceId,
-      closedAt,
       status
     });
     
     const request = await prisma.request.create({
       data: { 
         problem, 
-        transportId: Number(transportId), 
-        applicantId: Number(applicantId), 
-        mechanicId: mechanicId ? Number(mechanicId) : null, 
-        serviceId: serviceId ? Number(serviceId) : null, 
-        closedAt,
-        status: status || "новая"
+        transportId: parseInt(transportId), 
+        applicantId: parseInt(applicantId), 
+        mechanicId: mechanicId ? parseInt(mechanicId) : null, 
+        serviceId: serviceId ? parseInt(serviceId) : null, 
+        closedAt: closedAt ? new Date(closedAt) : null,
+        status: status || "новая",
+        submittedAt: new Date()
       },
     });
     
-    console.log('Request created successfully:', request);
-    res.json(request);
+    logger.success('Заявка создана', { 
+      id: request.id, 
+      status: request.status,
+      submittedAt: request.submittedAt 
+    });
+    
+    const fullRequest = await prisma.request.findUnique({
+      where: { id: request.id },
+      include: { 
+        applicant: {
+          select: {
+            id: true,
+            name: true,
+            email: true
+          }
+        }, 
+        mechanic: {
+          select: {
+            id: true,
+            name: true,
+            email: true
+          }
+        }, 
+        transport: true, 
+        service: {
+          select: {
+            id: true,
+            address: true,
+            workTime: true
+          }
+        } 
+      },
+    });
+    
+    res.json(fullRequest);
   } catch (error) {
-    console.error('Error creating request:', error);
+    logger.error('Ошибка создания заявки', error);
     res.status(400).json({ error: error.message });
   }
 });
 
-// ==================== ОБНОВЛЕНИЕ ЗАЯВКИ ====================
 app.put("/requests/:id", async (req, res) => {
   try {
     const { id } = req.params;
     const { problem, mechanicId, serviceId, closedAt, status } = req.body;
     
-    console.log('🔄 Обновление заявки:', {
+    logger.info('Обновление заявки', {
       id,
-      problem,
+      problem: problem?.substring(0, 50) + (problem?.length > 50 ? '...' : ''),
       mechanicId,
       serviceId,
       closedAt,
@@ -150,13 +494,12 @@ app.put("/requests/:id", async (req, res) => {
     
     if (problem !== undefined) updateData.problem = problem;
     if (mechanicId !== undefined) {
-      updateData.mechanicId = mechanicId === null ? null : Number(mechanicId);
+      updateData.mechanicId = mechanicId === null ? null : parseInt(mechanicId);
     }
     if (serviceId !== undefined) {
-      updateData.serviceId = serviceId === null ? null : Number(serviceId);
+      updateData.serviceId = serviceId === null ? null : parseInt(serviceId);
     }
     
-    // Обработка closedAt - преобразуем null в undefined для Prisma
     if (closedAt !== undefined) {
       if (closedAt === null) {
         updateData.closedAt = null;
@@ -167,20 +510,38 @@ app.put("/requests/:id", async (req, res) => {
     
     if (status !== undefined) updateData.status = status;
     
-    console.log('📦 Данные для обновления:', updateData);
+    logger.debug('Данные для обновления заявки', updateData);
     
     const request = await prisma.request.update({
-      where: { id: Number(id) },
+      where: { id: parseInt(id) },
       data: updateData,
       include: {
-        applicant: true,
-        mechanic: true,
+        applicant: {
+          select: {
+            id: true,
+            name: true,
+            email: true
+          }
+        },
+        mechanic: {
+          select: {
+            id: true,
+            name: true,
+            email: true
+          }
+        },
         transport: true,
-        service: true
+        service: {
+          select: {
+            id: true,
+            address: true,
+            workTime: true
+          }
+        }
       }
     });
     
-    console.log('✅ Заявка успешно обновлена:', {
+    logger.success('Заявка обновлена', {
       id: request.id,
       status: request.status,
       closedAt: request.closedAt
@@ -188,74 +549,56 @@ app.put("/requests/:id", async (req, res) => {
     
     res.json(request);
   } catch (error) {
-    console.error('❌ Ошибка обновления заявки:', error);
+    logger.error('Ошибка обновления заявки', error);
     res.status(400).json({ error: error.message });
   }
 });
 
-// ==================== ОТКЛОНЕНИЕ ЗАЯВКИ ====================
-app.put("/requests/:id/reject", async (req, res) => {
-  try {
-    const { id } = req.params;
-    
-    console.log('❌ Отклонение заявки:', id);
-    
-    const request = await prisma.request.update({
-      where: { id: Number(id) },
-      data: {
-        status: "отклонена",
-        closedAt: new Date()
-      },
-      include: {
-        applicant: true,
-        mechanic: true,
-        transport: true,
-        service: true
-      }
-    });
-    
-    console.log('✅ Заявка отклонена:', {
-      id: request.id,
-      status: request.status,
-      closedAt: request.closedAt
-    });
-    
-    res.json(request);
-  } catch (error) {
-    console.error('❌ Ошибка отклонения заявки:', error);
-    res.status(400).json({ error: error.message });
-  }
-});
-
-// ==================== ОБНОВЛЕНИЕ СТАТУСА ЗАЯВКИ ====================
 app.put("/requests/:id/status", async (req, res) => {
   try {
     const { id } = req.params;
     const { status } = req.body;
     
-    console.log('🔄 Обновление статуса заявки:', { id, status });
+    logger.info('Обновление статуса заявки', { id, status });
     
     const updateData = { status };
     
-    // Автоматически управляем closedAt в зависимости от статуса
-    if (status === 'отклонена') {
+    if (status === 'отклонена' || status === 'завершена') {
       updateData.closedAt = new Date();
     } else if (status === 'новая') {
       updateData.closedAt = null;
     }
     
     const request = await prisma.request.update({
-      where: { id: Number(id) },
+      where: { id: parseInt(id) },
       data: updateData,
       include: {
-        applicant: true,
-        mechanic: true,
+        applicant: {
+          select: {
+            id: true,
+            name: true,
+            email: true
+          }
+        },
+        mechanic: {
+          select: {
+            id: true,
+            name: true,
+            email: true
+          }
+        },
         transport: true,
-        service: true
+        service: {
+          select: {
+            id: true,
+            address: true,
+            workTime: true
+          }
+        }
       }
     });
     
-    console.log('✅ Статус заявки обновлен:', {
+    logger.success('Статус заявки обновлен', {
       id: request.id,
       status: request.status,
       closedAt: request.closedAt
@@ -263,7 +606,7 @@ app.put("/requests/:id/status", async (req, res) => {
     
     res.json(request);
   } catch (error) {
-    console.error('❌ Ошибка обновления статуса заявки:', error);
+    logger.error('Ошибка обновления статуса заявки', error);
     res.status(400).json({ error: error.message });
   }
 });
@@ -271,68 +614,165 @@ app.put("/requests/:id/status", async (req, res) => {
 // ==================== ТРАНСПОРТ ====================
 app.get("/transports", async (req, res) => {
   try {
+    logger.info('Получение списка транспорта');
+    
     const transports = await prisma.transport.findMany({ 
-      include: { requests: true } 
+      select: {
+        id: true,
+        type: true,
+        serial: true,
+        model: true,
+        photo: true
+      }
     });
-    console.log(`Returning ${transports.length} transports`);
+    
+    logger.success('Список транспорта получен', { count: transports.length });
     res.json(transports);
   } catch (error) {
-    console.error('Error fetching transports:', error);
+    logger.error('Ошибка получения списка транспорта', error);
     res.status(400).json({ error: error.message });
   }
 });
 
 app.get("/transports/:id", async (req, res) => {
-  const { id } = req.params;
-  const transport = await prisma.transport.findUnique({
-    where: { id: Number(id) },
-    include: { requests: true },
-  });
-  res.json(transport);
+  try {
+    const { id } = req.params;
+    logger.info('Получение данных транспорта', { id });
+    
+    const transport = await prisma.transport.findUnique({
+      where: { id: parseInt(id) },
+      select: {
+        id: true,
+        type: true,
+        serial: true,
+        model: true,
+        photo: true
+      }
+    });
+    
+    if (transport) {
+      logger.success('Данные транспорта получены', { 
+        id: transport.id, 
+        type: transport.type,
+        model: transport.model 
+      });
+      res.json(transport);
+    } else {
+      logger.warn('Транспорт не найден', { id });
+      res.status(404).json({ error: 'Транспорт не найден' });
+    }
+  } catch (error) {
+    logger.error('Ошибка получения данных транспорта', error);
+    res.status(400).json({ error: error.message });
+  }
 });
 
 app.post("/transports", async (req, res) => {
   try {
     const { type, serial, photo, model } = req.body;
     
-    console.log('Creating transport with data:', {
-      type, serial, model, photo: photo ? 'photo provided' : 'no photo'
+    logger.info('Создание нового транспорта', {
+      type, 
+      serial, 
+      model, 
+      hasPhoto: !!photo
     });
     
     const transport = await prisma.transport.create({
-      data: { type, serial, photo, model },
+      data: { 
+        type, 
+        serial, 
+        photo, 
+        model 
+      },
     });
     
-    console.log('Transport created successfully:', transport);
-    res.json(transport);
+    logger.success('Транспорт создан', { 
+      id: transport.id,
+      type: transport.type,
+      model: transport.model 
+    });
+    
+    res.json({
+      id: transport.id,
+      type: transport.type,
+      serial: transport.serial,
+      model: transport.model,
+      photo: transport.photo
+    });
   } catch (error) {
-    console.error('Error creating transport:', error);
+    logger.error('Ошибка создания транспорта', error);
     res.status(400).json({ error: error.message });
   }
 });
 
 // ==================== МЕХАНИК ====================
 app.get("/mechanics", async (req, res) => {
-  const mechanics = await prisma.mechanic.findMany({
-    include: { requests: true, service: true },
-  });
-  res.json(mechanics);
+  try {
+    logger.info('Получение списка механиков');
+    
+    const mechanics = await prisma.mechanic.findMany({
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        photo: true,
+        role: true,
+        serviceId: true
+      }
+    });
+    
+    logger.success('Список механиков получен', { count: mechanics.length });
+    res.json(mechanics);
+  } catch (error) {
+    logger.error('Ошибка получения списка механиков', error);
+    res.status(400).json({ error: error.message });
+  }
 });
 
 app.get("/mechanics/:id", async (req, res) => {
-  const { id } = req.params;
-  const mechanic = await prisma.mechanic.findUnique({
-    where: { id: Number(id) },
-    include: { requests: true, service: true },
-  });
-  res.json(mechanic);
+  try {
+    const { id } = req.params;
+    logger.info('Получение данных механика', { id });
+    
+    const mechanic = await prisma.mechanic.findUnique({
+      where: { id: parseInt(id) },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        photo: true,
+        role: true,
+        serviceId: true
+      }
+    });
+    
+    if (mechanic) {
+      logger.success('Данные механика получены', { 
+        id: mechanic.id, 
+        name: mechanic.name,
+        serviceId: mechanic.serviceId 
+      });
+      res.json(mechanic);
+    } else {
+      logger.warn('Механик не найден', { id });
+      res.status(404).json({ error: 'Механик не найден' });
+    }
+  } catch (error) {
+    logger.error('Ошибка получения данных механика', error);
+    res.status(400).json({ error: error.message });
+  }
 });
 
 app.post("/mechanics", async (req, res) => {
   try {
     const { name, role, photo, password, email, serviceId } = req.body;
-    console.log('Creating mechanic with data:', {
-      name, email, serviceId, photo: photo ? 'photo provided' : 'no photo'
+    
+    logger.info('Создание нового механика', {
+      name, 
+      email, 
+      serviceId, 
+      hasPhoto: !!photo
     });
     
     const mechanic = await prisma.mechanic.create({
@@ -342,29 +782,49 @@ app.post("/mechanics", async (req, res) => {
         photo, 
         password, 
         email, 
-        serviceId: serviceId ? Number(serviceId) : null
+        serviceId: serviceId ? parseInt(serviceId) : null
       },
     });
     
-    console.log('Mechanic created successfully:', mechanic);
-    res.json(mechanic);
+    logger.success('Механик создан', { 
+      id: mechanic.id,
+      name: mechanic.name,
+      serviceId: mechanic.serviceId 
+    });
+    
+    res.json({
+      id: mechanic.id,
+      name: mechanic.name,
+      email: mechanic.email,
+      photo: mechanic.photo,
+      role: mechanic.role,
+      serviceId: mechanic.serviceId
+    });
   } catch (error) {
-    console.error('Error creating mechanic:', error);
+    logger.error('Ошибка создания механика', error);
     res.status(400).json({ error: error.message });
   }
 });
 
-// ==================== ОБНОВЛЕНИЕ МЕХАНИКА ====================
 app.put("/mechanics/:id", async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, email, photo, password } = req.body;
+    const { name, email, photo, password, serviceId } = req.body;
     
-    console.log('Updating mechanic:', { id, name, email, photo: photo ? 'photo provided' : 'no photo' });
+    logger.info('Обновление данных механика', { 
+      id, 
+      name, 
+      email, 
+      serviceId,
+      hasPhoto: !!photo 
+    });
     
     const updateData = {};
     if (name !== undefined) updateData.name = name;
     if (email !== undefined) updateData.email = email;
+    if (serviceId !== undefined) {
+      updateData.serviceId = serviceId === null ? null : parseInt(serviceId);
+    }
     
     if (photo !== undefined) {
       updateData.photo = photo;
@@ -375,58 +835,135 @@ app.put("/mechanics/:id", async (req, res) => {
     }
     
     const mechanic = await prisma.mechanic.update({
-      where: { id: Number(id) },
+      where: { id: parseInt(id) },
       data: updateData,
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        photo: true,
+        role: true,
+        serviceId: true
+      }
     });
     
-    console.log('Mechanic updated successfully:', mechanic);
+    logger.success('Данные механика обновлены', { 
+      id: mechanic.id,
+      name: mechanic.name 
+    });
+    
     res.json(mechanic);
   } catch (error) {
-    console.error('Error updating mechanic:', error);
+    logger.error('Ошибка обновления данных механика', error);
     res.status(400).json({ error: error.message });
   }
 });
 
-// ==================== УДАЛЕНИЕ МЕХАНИКА ====================
 app.delete("/mechanics/:id", async (req, res) => {
   try {
     const { id } = req.params;
     
+    logger.info('Удаление механика', { id });
+    
+    logger.debug('Обновление связанных заявок (обнуление mechanicId)');
     await prisma.request.updateMany({
-      where: { mechanicId: Number(id) },
+      where: { mechanicId: parseInt(id) },
       data: { mechanicId: null },
     });
     
+    logger.debug('Удаление механика из базы данных');
     await prisma.mechanic.delete({
-      where: { id: Number(id) },
+      where: { id: parseInt(id) },
     });
     
-    res.json({ message: "Mechanic deleted successfully" });
+    logger.success('Механик удален', { id });
+    
+    res.json({ message: "Механик успешно удален" });
   } catch (error) {
+    logger.error('Ошибка удаления механика', error);
     res.status(400).json({ error: error.message });
   }
 });
 
 // ==================== МЕНЕДЖЕР ====================
 app.get("/managers", async (req, res) => {
-  const managers = await prisma.manager.findMany({
-    include: { service: true },
-  });
-  res.json(managers);
+  try {
+    logger.info('Получение списка менеджеров');
+    
+    const managers = await prisma.manager.findMany({
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        photo: true,
+        role: true,
+        serviceId: true
+      }
+    });
+    
+    logger.success('Список менеджеров получен', { count: managers.length });
+    res.json(managers);
+  } catch (error) {
+    logger.error('Ошибка получения списка менеджеров', error);
+    res.status(400).json({ error: error.message });
+  }
 });
 
 app.get("/managers/:id", async (req, res) => {
-  const { id } = req.params;
-  const manager = await prisma.manager.findUnique({
-    where: { id: Number(id) },
-    include: { service: true },
-  });
-  res.json(manager);
+  try {
+    const { id } = req.params;
+    logger.info('Получение данных менеджера', { id });
+    
+    const manager = await prisma.manager.findUnique({
+      where: { id: parseInt(id) },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        photo: true,
+        role: true,
+        serviceId: true
+      }
+    });
+    
+    if (manager) {
+      logger.success('Данные менеджера получены', { 
+        id: manager.id, 
+        name: manager.name,
+        serviceId: manager.serviceId 
+      });
+      res.json(manager);
+    } else {
+      logger.warn('Менеджер не найден', { id });
+      res.status(404).json({ error: 'Менеджер не найден' });
+    }
+  } catch (error) {
+    logger.error('Ошибка получения данных менеджера', error);
+    res.status(400).json({ error: error.message });
+  }
 });
 
 app.post("/managers", async (req, res) => {
   try {
     const { name, role, photo, password, email, serviceId } = req.body;
+    
+    logger.info('Создание нового менеджера', {
+      name, 
+      email, 
+      serviceId, 
+      hasPhoto: !!photo
+    });
+    
+    logger.debug('Проверка существующего email');
+    const existingUser = await prisma.manager.findUnique({
+      where: { email }
+    });
+    
+    if (existingUser) {
+      logger.warn('Попытка создания менеджера с существующим email', { email });
+      return res.status(400).json({ error: 'Email уже используется' });
+    }
+    
     const manager = await prisma.manager.create({
       data: { 
         name, 
@@ -434,24 +971,48 @@ app.post("/managers", async (req, res) => {
         photo, 
         password, 
         email, 
-        serviceId 
+        serviceId: serviceId ? parseInt(serviceId) : null
       },
     });
-    res.json(manager);
+    
+    logger.success('Менеджер создан', { 
+      id: manager.id,
+      name: manager.name,
+      serviceId: manager.serviceId 
+    });
+    
+    res.json({
+      id: manager.id,
+      name: manager.name,
+      email: manager.email,
+      photo: manager.photo,
+      role: manager.role,
+      serviceId: manager.serviceId
+    });
   } catch (error) {
+    logger.error('Ошибка создания менеджера', error);
     res.status(400).json({ error: error.message });
   }
 });
 
-// ==================== ОБНОВЛЕНИЕ МЕНЕДЖЕРА ====================
 app.put("/managers/:id", async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, email, photo, password } = req.body;
+    const { name, email, photo, password, serviceId } = req.body;
     
-    console.log('Updating manager:', { id, name, email, photo: photo ? 'photo provided' : 'no photo' });
+    logger.info('Обновление данных менеджера', { 
+      id, 
+      name, 
+      email, 
+      serviceId,
+      hasPhoto: !!photo 
+    });
     
     const updateData = { name, email };
+    
+    if (serviceId !== undefined) {
+      updateData.serviceId = serviceId === null ? null : parseInt(serviceId);
+    }
     
     if (photo !== undefined) {
       updateData.photo = photo;
@@ -462,14 +1023,45 @@ app.put("/managers/:id", async (req, res) => {
     }
     
     const manager = await prisma.manager.update({
-      where: { id: Number(id) },
+      where: { id: parseInt(id) },
       data: updateData,
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        photo: true,
+        role: true,
+        serviceId: true
+      }
     });
     
-    console.log('Manager updated successfully:', manager);
+    logger.success('Данные менеджера обновлены', { 
+      id: manager.id,
+      name: manager.name 
+    });
+    
     res.json(manager);
   } catch (error) {
-    console.error('Error updating manager:', error);
+    logger.error('Ошибка обновления данных менеджера', error);
+    res.status(400).json({ error: error.message });
+  }
+});
+
+app.delete("/managers/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    logger.info('Удаление менеджера', { id });
+    
+    const manager = await prisma.manager.delete({
+      where: { id: parseInt(id) },
+    });
+    
+    logger.success('Менеджер удален', { id });
+    
+    res.json(manager);
+  } catch (error) {
+    logger.error('Ошибка удаления менеджера', error);
     res.status(400).json({ error: error.message });
   }
 });
@@ -477,6 +1069,8 @@ app.put("/managers/:id", async (req, res) => {
 // ==================== СЕРВИС ====================
 app.get("/services", async (req, res) => {
   try {
+    logger.info('Получение списка сервисов');
+    
     const services = await prisma.service.findMany({
       select: {
         id: true,
@@ -497,124 +1091,522 @@ app.get("/services", async (req, res) => {
       }
     });
     
-    console.log(`Returning ${services.length} services`);
+    logger.success('Список сервисов получен', { count: services.length });
     res.json(services);
   } catch (error) {
-    console.error('Error fetching services:', error);
+    logger.error('Ошибка получения списка сервисов', error);
     res.status(400).json({ error: error.message });
   }
 });
 
 app.get("/services/:id", async (req, res) => {
-  const { id } = req.params;
-  const service = await prisma.service.findUnique({
-    where: { id: Number(id) },
-    include: { 
-      manager: true, 
-      mechanics: true, 
-      requests: true 
-    },
-  });
-  res.json(service);
+  try {
+    const { id } = req.params;
+    logger.info('Получение данных сервиса', { id });
+    
+    const service = await prisma.service.findUnique({
+      where: { id: parseInt(id) },
+      include: { 
+        manager: {
+          select: {
+            id: true,
+            name: true,
+            email: true
+          }
+        }, 
+        mechanics: {
+          select: {
+            id: true,
+            name: true,
+            email: true
+          }
+        }
+      },
+    });
+    
+    if (service) {
+      logger.success('Данные сервиса получены', { 
+        id: service.id, 
+        address: service.address,
+        managerId: service.manager?.id 
+      });
+      res.json(service);
+    } else {
+      logger.warn('Сервис не найден', { id });
+      res.status(404).json({ error: 'Сервис не найден' });
+    }
+  } catch (error) {
+    logger.error('Ошибка получения данных сервиса', error);
+    res.status(400).json({ error: error.message });
+  }
+});
+
+app.get("/services/:id/address", async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    logger.info('Получение адреса сервиса', { id });
+    
+    const service = await prisma.service.findUnique({
+      where: { id: parseInt(id) },
+      select: {
+        id: true,
+        address: true
+      }
+    });
+    
+    if (service) {
+      logger.success('Адрес сервиса получен', { 
+        id: service.id, 
+        address: service.address 
+      });
+      res.json({ address: service.address });
+    } else {
+      logger.warn('Сервис не найден при получении адреса', { id });
+      res.status(404).json({ error: 'Сервис не найден' });
+    }
+  } catch (error) {
+    logger.error('Ошибка получения адреса сервиса', error);
+    res.status(400).json({ error: error.message });
+  }
 });
 
 app.post("/services", async (req, res) => {
   try {
     const { address, workTime } = req.body;
+    
+    logger.info('Создание нового сервиса', { address, workTime });
+    
     const service = await prisma.service.create({ 
-      data: { address, workTime } 
-    });
-    res.json(service);
-  } catch (error) {
-    res.status(400).json({ error: error.message });
-  }
-});
-
-// ==================== ДОПОЛНИТЕЛЬНЫЕ ENDPOINT'Ы ====================
-
-app.get("/services-with-details", async (req, res) => {
-  try {
-    const services = await prisma.service.findMany({
-      include: { 
-        manager: true,
-        mechanics: true 
-      },
-    });
-    res.json(services);
-  } catch (error) {
-    res.status(400).json({ error: error.message });
-  }
-});
-
-app.get("/services/available", async (req, res) => {
-  try {
-    const services = await prisma.service.findMany({
-      select: {
-        id: true,
-        address: true,
-        workTime: true,
-        manager: {
-          select: {
-            id: true,
-            name: true
-          }
-        },
-        mechanics: {
-          select: {
-            id: true,
-            name: true
-          }
-        }
-      },
-      where: {
-        manager: { isNot: null },
-        mechanics: { some: {} }
-      }
+      data: { 
+        address, 
+        workTime: workTime || '' 
+      } 
     });
     
-    console.log(`Returning ${services.length} available services`);
-    res.json(services);
-  } catch (error) {
-    console.error('Error fetching available services:', error);
-    res.status(400).json({ error: error.message });
-  }
-});
-
-app.get("/services/debug", async (req, res) => {
-  try {
-    const allServices = await prisma.service.findMany();
-    const servicesWithDetails = await prisma.service.findMany({
-      include: { 
-        manager: true,
-        mechanics: true 
-      }
+    logger.success('Сервис создан', { 
+      id: service.id, 
+      address: service.address 
     });
     
     res.json({
-      allServicesCount: allServices.length,
-      servicesWithDetailsCount: servicesWithDetails.length,
-      allServices: allServices,
-      servicesWithDetails: servicesWithDetails
+      id: service.id,
+      address: service.address,
+      workTime: service.workTime
     });
   } catch (error) {
+    logger.error('Ошибка создания сервиса', error);
     res.status(400).json({ error: error.message });
   }
 });
 
-// ==================== ПРОВЕРКА БАЗЫ ДАННЫХ ====================
+app.put("/services/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { address, workTime } = req.body;
+    
+    logger.info('Обновление данных сервиса', { id, address, workTime });
+    
+    const service = await prisma.service.update({
+      where: { id: parseInt(id) },
+      data: { 
+        address, 
+        workTime: workTime || '' 
+      },
+    });
+    
+    logger.success('Данные сервиса обновлены', { 
+      id: service.id, 
+      address: service.address 
+    });
+    
+    res.json({
+      id: service.id,
+      address: service.address,
+      workTime: service.workTime
+    });
+  } catch (error) {
+    logger.error('Ошибка обновления данных сервиса', error);
+    res.status(400).json({ error: error.message });
+  }
+});
+
+app.delete("/services/:id", async (req, res) => {
+  try {
+    const serviceId = Number(req.params.id);
+
+    logger.info('Удаление сервиса и связанных данных', { serviceId });
+    
+    logger.debug('Начало транзакции по удалению сервиса');
+    const result = await prisma.$transaction(async (tx) => {
+
+      logger.debug('1. Обнуление mechanicId в связанных заявках');
+      await tx.request.updateMany({
+        where: {
+          mechanic: { serviceId: serviceId }
+        },
+        data: { mechanicId: null }
+      });
+
+      logger.debug('2. Обнуление serviceId в заявках');
+      await tx.request.updateMany({
+        where: { serviceId: serviceId },
+        data: { serviceId: null }
+      });
+
+      logger.debug('3. Получение списка механиков сервиса');
+      const mechanics = await tx.mechanic.findMany({
+        where: { serviceId: serviceId },
+        select: { id: true }
+      });
+
+      if (mechanics.length > 0) {
+        const ids = mechanics.map(m => m.id);
+        logger.debug(`Найдено ${mechanics.length} механиков для удаления`, { ids });
+
+        logger.debug('3.1. Обнуление mechanicId в заявках на удаляемых механиков');
+        await tx.request.updateMany({
+          where: { mechanicId: { in: ids } },
+          data: { mechanicId: null }
+        });
+
+        logger.debug('3.2. Удаление механиков сервиса');
+        await tx.mechanic.deleteMany({
+          where: { id: { in: ids } }
+        });
+      } else {
+        logger.debug('Механиков для удаления не найдено');
+      }
+
+      logger.debug('4. Удаление менеджера сервиса');
+      const deletedManagers = await tx.manager.deleteMany({
+        where: { serviceId: serviceId }
+      });
+      logger.debug(`Удалено менеджеров: ${deletedManagers.count}`);
+
+      logger.debug('5. Удаление сервиса');
+      return await tx.service.delete({
+        where: { id: serviceId }
+      });
+    });
+
+    logger.success('Сервис и все связанные сущности успешно удалены', { 
+      serviceId,
+      deletedService: result 
+    });
+    
+    res.json({
+      success: true,
+      message: "Сервис и все связанные сущности успешно удалены",
+      deleted: result
+    });
+
+  } catch (error) {
+    logger.error("Ошибка удаления сервиса", error);
+    res.status(400).json({ error: error.message });
+  }
+});
+
+
+// ==================== ЗАЯВКИ МЕХАНИКА ====================
+app.get("/mechanic/requests/:mechanicId", async (req, res) => {
+  try {
+    const { mechanicId } = req.params;
+    
+    logger.info('Получение заявок механика', { mechanicId });
+    
+    const requests = await prisma.request.findMany({
+      where: { 
+        mechanicId: parseInt(mechanicId),
+        status: { not: "завершена" }
+      },
+      include: { 
+        applicant: {
+          select: {
+            id: true,
+            name: true,
+            email: true
+          }
+        }, 
+        mechanic: {
+          select: {
+            id: true,
+            name: true,
+            email: true
+          }
+        }, 
+        transport: true, 
+        service: {
+          select: {
+            id: true,
+            address: true,
+            workTime: true
+          }
+        } 
+      },
+      orderBy: { submittedAt: 'desc' }
+    });
+    
+    logger.success('Заявки механика получены', { 
+      mechanicId,
+      count: requests.length 
+    });
+    res.json(requests);
+  } catch (error) {
+    logger.error('Ошибка получения заявок механика', error);
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// НОВЫЙ ЭНДПОИНТ для завершения заявки (был в API, но не в сервере)
+app.put("/requests/:id/complete", async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    logger.info('Завершение заявки', { id });
+    
+    const request = await prisma.request.update({
+      where: { id: parseInt(id) },
+      data: {
+        status: "завершена",
+        closedAt: new Date()
+      },
+      include: {
+        applicant: {
+          select: {
+            id: true,
+            name: true,
+            email: true
+          }
+        },
+        mechanic: {
+          select: {
+            id: true,
+            name: true,
+            email: true
+          }
+        },
+        transport: true,
+        service: {
+          select: {
+            id: true,
+            address: true,
+            workTime: true
+          }
+        }
+      }
+    });
+    
+    logger.success('Заявка завершена', { 
+      id: request.id,
+      closedAt: request.closedAt 
+    });
+    
+    res.json(request);
+  } catch (error) {
+    logger.error('Ошибка завершения заявки', error);
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// ==================== ДЛЯ АДМИНИСТРАТОРА ====================
+app.get("/all-requests", async (req, res) => {
+  try {
+    logger.info('Получение всех заявок для администратора');
+    
+    const requests = await prisma.request.findMany({
+      include: {
+        applicant: {
+          select: {
+            id: true,
+            name: true,
+            email: true
+          }
+        },
+        transport: true,
+        mechanic: {
+          select: {
+            id: true,
+            name: true,
+            email: true
+          }
+        },
+        service: {
+          select: {
+            id: true,
+            address: true,
+            workTime: true
+          }
+        }
+      },
+      orderBy: {
+        submittedAt: 'desc'
+      }
+    });
+    
+    logger.success('Все заявки получены', { count: requests.length });
+    res.json(requests);
+  } catch (error) {
+    logger.error('Ошибка получения всех заявок', error);
+    res.status(400).json({ error: error.message });
+  }
+});
+
+app.get("/all-transports", async (req, res) => {
+  try {
+    logger.info('Получение всего транспорта для администратора');
+    
+    const transports = await prisma.transport.findMany({
+      include: {
+        requests: {
+          select: {
+            id: true,
+            problem: true,
+            status: true
+          }
+        }
+      }
+    });
+    
+    logger.success('Весь транспорт получен', { count: transports.length });
+    res.json(transports);
+  } catch (error) {
+    logger.error('Ошибка получения всего транспорта', error);
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// НОВЫЙ ЭНДПОИНТ: Получение всех данных для админ-панели
+app.get("/admin/all-data", async (req, res) => {
+  try {
+    logger.info('Загрузка всех данных для админ-панели');
+    
+    logger.debug('Начало параллельной загрузки данных');
+    const [services, managers, mechanics, applicants, requests] = await Promise.all([
+      prisma.service.findMany({
+        select: {
+          id: true,
+          address: true,
+          workTime: true
+        }
+      }),
+      prisma.manager.findMany({
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          photo: true,
+          role: true,
+          serviceId: true
+        }
+      }),
+      prisma.mechanic.findMany({
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          photo: true,
+          role: true,
+          serviceId: true
+        }
+      }),
+      prisma.applicant.findMany({
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          photo: true,
+          role: true
+        }
+      }),
+      prisma.request.findMany({
+        include: {
+          applicant: {
+            select: {
+              id: true,
+              name: true,
+              email: true
+            }
+          },
+          transport: true,
+          mechanic: {
+            select: {
+              id: true,
+              name: true,
+              email: true
+            }
+          },
+          service: {
+            select: {
+              id: true,
+              address: true,
+              workTime: true
+            }
+          }
+        },
+        orderBy: {
+          submittedAt: 'desc'
+        }
+      })
+    ]);
+    
+    logger.success('Все данные загружены', {
+      services: services.length,
+      managers: managers.length,
+      mechanics: mechanics.length,
+      applicants: applicants.length,
+      requests: requests.length
+    });
+    
+    res.json({
+      services,
+      managers,
+      mechanics,
+      applicants,
+      requests
+    });
+  } catch (error) {
+    logger.error('Ошибка загрузки всех данных', error);
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// ==================== ДЕБАГ ИНФОРМАЦИЯ ====================
 app.get("/debug/database", async (req, res) => {
   try {
-    const servicesCount = await prisma.service.count();
-    const transportsCount = await prisma.transport.count();
-    const requestsCount = await prisma.request.count();
-    const applicantsCount = await prisma.applicant.count();
-    const mechanicsCount = await prisma.mechanic.count();
-    const managersCount = await prisma.manager.count();
+    logger.info('Получение отладочной информации о базе данных');
     
+    logger.debug('Подсчет записей в таблицах');
+    const [servicesCount, transportsCount, requestsCount, applicantsCount, mechanicsCount, managersCount] = await Promise.all([
+      prisma.service.count(),
+      prisma.transport.count(),
+      prisma.request.count(),
+      prisma.applicant.count(),
+      prisma.mechanic.count(),
+      prisma.manager.count()
+    ]);
+    
+    logger.debug('Получение последних заявок');
     const recentRequests = await prisma.request.findMany({
       take: 5,
       orderBy: { id: 'desc' },
-      include: { transport: true, service: true, applicant: true, mechanic: true }
+      include: { 
+        transport: true, 
+        service: true, 
+        applicant: true, 
+        mechanic: true 
+      }
+    });
+    
+    logger.success('Отладочная информация получена', {
+      counts: {
+        services: servicesCount,
+        transports: transportsCount,
+        requests: requestsCount,
+        applicants: applicantsCount,
+        mechanics: mechanicsCount,
+        managers: managersCount
+      }
     });
     
     res.json({
@@ -629,258 +1621,279 @@ app.get("/debug/database", async (req, res) => {
       recentRequests: recentRequests
     });
   } catch (error) {
+    logger.error('Ошибка получения отладочной информации', error);
     res.status(400).json({ error: error.message });
   }
 });
 
-// ==================== ТЕСТОВАЯ ЗАЯВКА ====================
-app.post("/test/request", async (req, res) => {
-  try {
-    const { applicantId } = req.body;
-    
-    const transport = await prisma.transport.create({
-      data: {
-        type: "троллейбусы",
-        serial: `TEST-${Date.now()}`,
-        model: "Тестовая модель",
-        photo: null
-      }
-    });
-    
-    const request = await prisma.request.create({
-      data: {
-        problem: "Тестовая проблема",
-        transportId: transport.id,
-        applicantId: applicantId,
-        status: "новая",
-        submittedAt: new Date()
-      }
-    });
-    
-    res.json({
-      success: true,
-      request: request,
-      transport: transport
-    });
-  } catch (error) {
-    res.status(400).json({ error: error.message });
-  }
-});
+//новые эндпоинты 05.12.2025 22:22
 
-// ==================== ПРОВЕРКА ФОТО ====================
-app.post("/test/photo", async (req, res) => {
-  try {
-    const { photo, testName } = req.body;
-    console.log(`Тест фото ${testName}:`, {
-      hasPhoto: !!photo,
-      photoLength: photo ? photo.length : 0,
-      first100Chars: photo ? photo.substring(0, 100) : 'none'
-    });
-    
-    res.json({
-      success: true,
-      message: `Тест фото ${testName} получен`,
-      photoInfo: {
-        received: !!photo,
-        length: photo ? photo.length : 0
-      }
-    });
-  } catch (error) {
-    res.status(400).json({ error: error.message });
-  }
-});
+// ==================== ДОПОЛНИТЕЛЬНЫЕ ЭНДПОИНТЫ ====================
 
-// ==================== ОБЩИЙ ENDPOINT ДЛЯ ОБНОВЛЕНИЯ ФОТО ====================
-app.put("/update-photo/:type/:id", async (req, res) => {
+// Получение профиля пользователя по ID и роли
+app.get("/users/:id", async (req, res) => {
   try {
-    const { type, id } = req.params;
-    const { photo } = req.body;
+    const { id } = req.params;
+    const { role } = req.query;
     
-    console.log(`Updating photo for ${type} id ${id}:`, {
-      photoLength: photo ? photo.length : 0
-    });
+    logger.info('Получение профиля пользователя', { id, role });
     
-    let result;
+    let user = null;
     
-    switch (type) {
-      case 'manager':
-        result = await prisma.manager.update({
-          where: { id: Number(id) },
-          data: { photo },
-        });
-        break;
-      case 'mechanic':
-        result = await prisma.mechanic.update({
-          where: { id: Number(id) },
-          data: { photo },
-        });
-        break;
+    switch(role) {
       case 'applicant':
-        result = await prisma.applicant.update({
-          where: { id: Number(id) },
-          data: { photo },
-        });
-        break;
-      default:
-        return res.status(400).json({ error: 'Invalid type' });
-    }
-    
-    res.json(result);
-  } catch (error) {
-    console.error(`Error updating photo for ${type}:`, error);
-    res.status(400).json({ error: error.message });
-  }
-});
-
-// ==================== ПОЛУЧЕНИЕ ДАННЫХ ПОЛЬЗОВАТЕЛЯ С ФОТО ====================
-app.get("/user-data/:type/:id", async (req, res) => {
-  try {
-    const { type, id } = req.params;
-    
-    let user;
-    switch (type) {
-      case 'manager':
-        user = await prisma.manager.findUnique({
-          where: { id: Number(id) },
-          select: { id: true, name: true, email: true, photo: true, serviceId: true }
-        });
-        break;
-      case 'mechanic':
-        user = await prisma.mechanic.findUnique({
-          where: { id: Number(id) },
-          select: { id: true, name: true, email: true, photo: true, serviceId: true }
-        });
-        break;
-      case 'applicant':
+        logger.debug('Поиск заявителя');
         user = await prisma.applicant.findUnique({
-          where: { id: Number(id) },
-          select: { id: true, name: true, email: true, photo: true }
+          where: { id: parseInt(id) },
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            photo: true,
+            role: true,
+            password: false
+          }
         });
         break;
+        
+      case 'mechanic':
+        logger.debug('Поиск механика');
+        user = await prisma.mechanic.findUnique({
+          where: { id: parseInt(id) },
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            photo: true,
+            role: true,
+            serviceId: true,
+            password: false
+          }
+        });
+        break;
+        
+      case 'manager':
+        logger.debug('Поиск менеджера');
+        user = await prisma.manager.findUnique({
+          where: { id: parseInt(id) },
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            photo: true,
+            role: true,
+            serviceId: true,
+            password: false
+          }
+        });
+        break;
+        
       default:
-        return res.status(400).json({ error: 'Invalid type' });
+        logger.warn('Не указана роль при получении профиля', { id, role });
+        return res.status(400).json({ error: 'Не указана роль' });
     }
     
-    if (user) {
-      res.json(user);
-    } else {
-      res.status(404).json({ error: 'User not found' });
+    if (!user) {
+      logger.warn('Пользователь не найден', { id, role });
+      return res.status(404).json({ error: 'Пользователь не найден' });
     }
+    
+    logger.success('Профиль пользователя получен', { 
+      id: user.id, 
+      name: user.name,
+      role: role 
+    });
+    
+    res.json(user);
   } catch (error) {
-    console.error(`Error fetching user data for ${type}:`, error);
+    logger.error('Ошибка получения профиля', error);
     res.status(400).json({ error: error.message });
   }
 });
 
-// ==================== ЭНДПОИНТЫ ДЛЯ МЕХАНИКА ====================
-
-// Получение заявок механика
-app.get("/mechanic/requests/:mechanicId", async (req, res) => {
+// Обновление профиля пользователя
+app.put("/users/:id", async (req, res) => {
   try {
-    const { mechanicId } = req.params;
+    const { id } = req.params;
+    const { role, ...updateData } = req.body;
     
+    logger.info('Обновление профиля пользователя', { id, role });
+    
+    // Скрываем пароль в логах
+    const logData = { ...updateData };
+    if (logData.password) {
+      logData.password = '***HIDDEN***';
+    }
+    logger.debug('Данные для обновления', logData);
+    
+    // Убираем пароль если он пустой
+    if (updateData.password === '' || updateData.password === null) {
+      delete updateData.password;
+    }
+    
+    let updatedUser = null;
+    
+    switch(role) {
+      case 'applicant':
+        logger.debug('Обновление заявителя');
+        updatedUser = await prisma.applicant.update({
+          where: { id: parseInt(id) },
+          data: updateData,
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            photo: true,
+            role: true,
+            password: false
+          }
+        });
+        break;
+        
+      case 'mechanic':
+        logger.debug('Обновление механика');
+        updatedUser = await prisma.mechanic.update({
+          where: { id: parseInt(id) },
+          data: updateData,
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            photo: true,
+            role: true,
+            serviceId: true,
+            password: false
+          }
+        });
+        break;
+        
+      case 'manager':
+        logger.debug('Обновление менеджера');
+        updatedUser = await prisma.manager.update({
+          where: { id: parseInt(id) },
+          data: updateData,
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            photo: true,
+            role: true,
+            serviceId: true,
+            password: false
+          }
+        });
+        break;
+        
+      default:
+        logger.warn('Не указана роль при обновлении профиля', { id, role });
+        return res.status(400).json({ error: 'Не указана роль' });
+    }
+    
+    logger.success('Профиль обновлен', { 
+      id: updatedUser.id, 
+      name: updatedUser.name 
+    });
+    
+    res.json(updatedUser);
+  } catch (error) {
+    logger.error('Ошибка обновления профиля', error);
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// Получение деталей сервиса
+app.get("/services/:id/details", async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    logger.info('Получение деталей сервиса', { id });
+    
+    const service = await prisma.service.findUnique({
+      where: { id: parseInt(id) },
+      select: {
+        id: true,
+        address: true,
+        workTime: true,
+        manager: {
+          select: {
+            id: true,
+            name: true
+          }
+        }
+      }
+    });
+    
+    if (!service) {
+      logger.warn('Сервис не найден при получении деталей', { id });
+      return res.status(404).json({ error: 'Сервис не найден' });
+    }
+    
+    logger.success('Детали сервиса получены', { 
+      id: service.id, 
+      address: service.address 
+    });
+    
+    res.json(service);
+  } catch (error) {
+    logger.error('Ошибка получения деталей сервиса', error);
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// ==================== ЗАЯВКИ ЗАЯВИТЕЛЯ ====================
+app.get("/applicant/requests/:applicantId", async (req, res) => {
+  try {
+    const { applicantId } = req.params;
+    const applicantIdInt = parseInt(applicantId);
+
+    if (isNaN(applicantIdInt)) {
+      logger.warn('Некорректный ID заявителя', { applicantId });
+      return res.status(400).json({ error: 'Некорректный ID заявителя.' });
+    }
+
+    logger.info('Загрузка заявок для заявителя', { applicantId: applicantIdInt });
+
     const requests = await prisma.request.findMany({
       where: { 
-        mechanicId: Number(mechanicId),
-        status: { not: "завершена" }
+        applicantId: applicantIdInt
       },
       include: { 
-        applicant: true, 
-        mechanic: true, 
+        applicant: {
+          select: { id: true, name: true, email: true }
+        }, 
+        mechanic: {
+          select: { id: true, name: true, email: true }
+        }, 
         transport: true, 
-        service: true 
+        service: {
+          select: { id: true, address: true, workTime: true }
+        } 
       },
       orderBy: { submittedAt: 'desc' }
     });
+
+    logger.success('Заявки заявителя получены', { 
+      applicantId: applicantIdInt,
+      count: requests.length 
+    });
     
-    console.log(`Returning ${requests.length} requests for mechanic ${mechanicId}`);
     res.json(requests);
   } catch (error) {
-    console.error('Error fetching mechanic requests:', error);
-    res.status(400).json({ error: error.message });
+    logger.error('Ошибка загрузки заявок заявителя', error);
+    res.status(500).json({ error: 'Внутренняя ошибка сервера: ' + error.message });
   }
 });
 
-// Завершение заявки
-app.put("/mechanic/requests/:id/complete", async (req, res) => {
-  try {
-    const { id } = req.params;
-    
-    const request = await prisma.request.update({
-      where: { id: Number(id) },
-      data: {
-        status: "завершена",
-        closedAt: new Date()
-      },
-      include: {
-        applicant: true,
-        mechanic: true,
-        transport: true,
-        service: true
-      }
-    });
-    
-    console.log(`Request ${id} completed by mechanic`);
-    res.json(request);
-  } catch (error) {
-    console.error('Error completing request:', error);
-    res.status(400).json({ error: error.message });
-  }
-});
-
-// Обновление статуса заявки механиком
-app.put("/mechanic/requests/:id/status", async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { status } = req.body;
-    
-    const request = await prisma.request.update({
-      where: { id: Number(id) },
-      data: { status },
-      include: {
-        applicant: true,
-        mechanic: true,
-        transport: true,
-        service: true
-      }
-    });
-    
-    console.log(`Request ${id} status updated to: ${status}`);
-    res.json(request);
-  } catch (error) {
-    console.error('Error updating request status:', error);
-    res.status(400).json({ error: error.message });
-  }
-});
-
-// Получение данных механика с фото
-app.get("/mechanic/:id", async (req, res) => {
-  try {
-    const { id } = req.params;
-    
-    const mechanic = await prisma.mechanic.findUnique({
-      where: { id: Number(id) },
-      select: { 
-        id: true, 
-        name: true, 
-        email: true, 
-        photo: true, 
-        serviceId: true 
-      }
-    });
-    
-    if (mechanic) {
-      res.json(mechanic);
-    } else {
-      res.status(404).json({ error: 'Mechanic not found' });
-    }
-  } catch (error) {
-    console.error('Error fetching mechanic data:', error);
-    res.status(400).json({ error: error.message });
-  }
-});
-
-// ==================== СЕРВЕР ====================
+// ==================== ЗАПУСК СЕРВЕРА ====================
 app.listen(PORT, () => {
-  console.log(`🚀 Server running on http://localhost:${PORT}`);
+  logger.info(`🚀 Сервер запущен на http://localhost:${PORT}`);
+  logger.info(`📞 API доступен по адресу: http://localhost:${PORT}`);
+  
+  // Логирование системной информации
+  logger.debug('Конфигурация сервера', {
+    port: PORT,
+    nodeVersion: process.version,
+    platform: process.platform,
+    memoryUsage: process.memoryUsage()
+  });
 });
